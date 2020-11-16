@@ -1,0 +1,10 @@
+/logs
+/build
+/data
+/devel
+.vscode
+/.catkin_tools
+notes.txt
+kernels
+**/desktop.ini
+

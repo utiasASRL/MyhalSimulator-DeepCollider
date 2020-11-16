@@ -1,0 +1,8 @@
+<launch>
+    <param name="gpu_id" type="str" value="0" />
+	<param name="log_name" type="str" value="Log_2020-10-13_15-43-31"/>  <!-- First network (for Round2) -->
+	<!-- <param name="log_name" type="str" value="Log_2020-10-16_23-40-33"/>  Second network (for Round3) -->
+	<!-- <param name="log_name" type="str" value="Log_2020-10-27_15-02-20"/>  Third network (for Round4) -->
+	<param name="chkp_name" type="str" value="chkp_0400.tar"/>
+	<node name="online_frame_preds" pkg="classifier" type="online_frame_preds.py" output="screen"/>
+</launch>

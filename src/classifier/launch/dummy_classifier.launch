@@ -1,0 +1,5 @@
+<launch>
+
+	<node name="dummy_classifier" pkg="classifier" type="dummy_classifier.py" output = 'screen'/>
+
+</launch>
