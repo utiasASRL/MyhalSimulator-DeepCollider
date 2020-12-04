@@ -7,7 +7,7 @@
                 "limitSymbolsToIncludedHeaders": true
             },
             "includePath": [
-                "/opt/ros/noetic/include",
+                "/opt/ros/noetic/include/**",
                 "/usr/include/**",
                 "${workspaceFolder}/**"
             ],
