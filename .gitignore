@@ -5,6 +5,6 @@
 .vscode
 /.catkin_tools
 notes.txt
-kernels
+/kernels
 **/desktop.ini
 
