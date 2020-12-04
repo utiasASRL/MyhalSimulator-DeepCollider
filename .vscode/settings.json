@@ -2,17 +2,17 @@
 
     "python.pythonPath": "/usr/bin/python3",
     "python.autoComplete.extraPaths": [
-        "~/catkin_ws/src/classifier/src/cpp_wrappers/cpp_neighbors",
-        "~/catkin_ws/src/classifier/src/cpp_wrappers/cpp_subsampling",
-        "~/catkin_ws/src/classifier/src/cpp_wrappers",
+        "src/classifier/src/cpp_wrappers/cpp_neighbors",
+        "src/classifier/src/cpp_wrappers/cpp_subsampling",
+        "src/classifier/src/cpp_wrappers",
         "/opt/ros/noetic/lib",
         "/opt/ros/noetic/lib/python3/dist-packages",
         "/opt/ros/noetic/lib/python3/dist-packages/rospy",
         "/opt/ros/noetic/lib/**"
     ],
 
-    "python.linting.pylintEnabled": true,
-    "python.linting.enabled": true,
+    //"python.linting.pylintEnabled": true,
+    //"python.linting.enabled": true,
 
     "files.watcherExclude": {
         "**/.git/objects/**": true,
