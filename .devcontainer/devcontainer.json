@@ -1,0 +1,15 @@
+{
+    "image": "docker_ros_noetic_${localEnv:USER}",
+
+    "workspaceFolder": "/home/${localEnv:USER}/catkin_ws",
+
+    "workspaceMount": "source=${localWorkspaceFolder},target=/home/${localEnv:USER}/catkin_ws,type=bind,consistency=cached",
+    
+    "mounts": [
+      "source=${localWorkspaceFolder}/../Simulation_Data,target=/home/${localEnv:USER}/Myhal_Simulation,type=bind,consistency=cached"
+          ],
+
+    "extensions": ["ms-vscode.cpptools", "twxs.cmake","ms-vscode.cmake-tools", "ms-python.python", "ms-iot.vscode-ros", "redhat.vscode-xml", "dotjoshjohnson.xml", "donjayamanne.githistory"],
+    
+
+}

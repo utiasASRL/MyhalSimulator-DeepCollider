@@ -2,9 +2,8 @@
 /build
 /data
 /devel
-.vscode
 /.catkin_tools
 notes.txt
 /kernels
 **/desktop.ini
-
+git_login.sh
