@@ -2,9 +2,12 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "ROS: source",
+            "label": "ROS: catkin_make",
             "type": "shell",
-            "command": "./catkin_maker.sh",
+            "command": "catkin_make",
+            "args": [
+                "-j4"
+            ],
             "problemMatcher": [],
             "group": {
                 "kind": "build",
@@ -12,4 +15,5 @@
             }
         }
     ]
+    
 }
