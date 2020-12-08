@@ -8,11 +8,12 @@
         "/opt/ros/noetic/lib",
         "/opt/ros/noetic/lib/python3/dist-packages",
         "/opt/ros/noetic/lib/python3/dist-packages/rospy",
-        "/opt/ros/noetic/lib/**"
+        "/opt/ros/noetic/lib/**",
+        "/home/hth/catkin_ws/devel/lib/python3/dist-packages"
     ],
 
-    //"python.linting.pylintEnabled": true,
-    //"python.linting.enabled": true,
+    "python.linting.pylintEnabled": true,
+    "python.linting.enabled": true,
 
     "files.watcherExclude": {
         "**/.git/objects/**": true,
