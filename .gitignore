@@ -7,3 +7,11 @@ notes.txt
 /kernels
 **/desktop.ini
 git_login.sh
+**/build/**
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# C extensions
+*.so

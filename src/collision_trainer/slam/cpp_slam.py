@@ -26,7 +26,6 @@ import numpy as np
 import cpp_wrappers.cpp_polar_normals.polar_processing as cpp_polar_processing
 import cpp_wrappers.cpp_icp.icp as cpp_icp
 import cpp_wrappers.cpp_pointmap.pointmap as cpp_pointmap
-import cpp_wrappers.cpp_region_growing.region_growing as cpp_region_growing
 import cpp_wrappers.cpp_slam.pointmap_slam as cpp_pointmap_slam
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -172,40 +171,6 @@ def ray_casting_annot(frame_names,
                                                                       #motion_distortion=motion_distortion)
 
     return movable_prob, movable_count
-
-
-def lidar_plane_growing(frame_pts,
-                        frame_normals,
-                        norm_thresh=20*np.pi/180,
-                        dist_thresh=0.1,
-                        min_points=500,
-                        max_planes=50,
-                        lidar_n_lines=32):
-
-    return cpp_region_growing.lidar_planes(frame_pts,
-                                           frame_normals,
-                                           norm_thresh=norm_thresh,
-                                           dist_thresh=dist_thresh,
-                                           min_points=min_points,
-                                           max_planes=max_planes,
-                                           lidar_n_lines=lidar_n_lines)
-
-
-def map_plane_growing(map_pts,
-                      map_normals,
-                      norm_thresh=20*np.pi/180,
-                      dist_thresh=0.1,
-                      min_points=500,
-                      max_planes=50,
-                      map_dl=0.1):
-
-    return cpp_region_growing.pointmap_planes(map_pts,
-                                              map_normals,
-                                              norm_thresh=norm_thresh,
-                                              dist_thresh=dist_thresh,
-                                              min_points=min_points,
-                                              max_planes=max_planes,
-                                              map_dl=map_dl)
 
 
 def slam_on_sim_sequence(f_names,

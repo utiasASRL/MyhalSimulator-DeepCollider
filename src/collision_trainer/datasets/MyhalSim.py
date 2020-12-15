@@ -2708,6 +2708,7 @@ class MyhalSimDataset(PointCloudDataset):
         data = read_ply(velo_file)
         return np.vstack((data['x'], data['y'], data['z'])).T
 
+
 class MyhalSimSampler(Sampler):
     """Sampler for MyhalSim"""
 
