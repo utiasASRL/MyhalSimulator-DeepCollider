@@ -1273,7 +1273,7 @@ class MyhalSimSlam:
                               [world_points],
                               ['x', 'y', 'z'])
 
-                    filename = join('debug_map.ply'.format(i))
+                    filename = 'debug_map.ply'
                     write_ply(filename,
                               [pointmap.points, pointmap.normals, pointmap.scores, pointmap.counts],
                               ['x', 'y', 'z', 'nx', 'ny', 'nz', 'scores', 'counts'])

@@ -34,7 +34,7 @@ from os.path import exists, join, isdir
 # Other function of the project
 from utils.ply import read_ply, write_ply
 from slam.cpp_slam import update_pointmap, polar_normals, point_to_map_icp, \
-    lidar_plane_growing, map_plane_growing, slam_on_sim_sequence, ray_casting_annot
+    slam_on_sim_sequence, ray_casting_annot
 from slam.dev_slam import normal_filtering, bundle_icp, frame_H_to_points, estimate_normals_planarity_debug, \
     cart2pol, get_odometry, ssc_to_homo, extract_ground, save_trajectory
 

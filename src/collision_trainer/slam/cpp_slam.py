@@ -83,7 +83,6 @@ def point_to_map_icp(points, weights,
     return all_H, rms, planar_rms
 
 
-
 def bundle_pt2pl_icp(frames, normals, weights,
                           n_samples=1000,
                           max_pairing_dist=0.2,
