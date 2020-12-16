@@ -62,7 +62,7 @@ class MyhalSimSlam:
         self.name = 'MyhalSimSlam'
 
         # Data path
-        self.original_path = '../../Myhal_Simulation'
+        self.original_path = '../../../Myhal_Simulation'
         # self.data_path = '../../Data/Myhal_Sim'
         self.data_path = self.original_path
         self.days_folder = join(self.original_path, 'simulated_runs')
