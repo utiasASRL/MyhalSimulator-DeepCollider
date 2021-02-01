@@ -41,9 +41,10 @@ from utils.metrics import IoU_from_confusions, fast_confusion
 from utils.config import Config
 from sklearn.neighbors import KDTree
 
+from utils.mayavi_visu import fast_save_future_anim, save_zoom_img
+
 from models.blocks import KPConv
 from models.architectures import rot_loss
-
 
 # ----------------------------------------------------------------------------------------------------------------------
 #
@@ -216,6 +217,8 @@ class ModelTrainer:
                 net_loss = net.loss(outputs, batch)
                 acc = net.accuracy(outputs, batch)
 
+                pytorch_total_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
+
                 # Invariant and equivaraint losses
                 if rotated_batch is not None:
                     invar_loss, equivar_loss = rot_loss(net, rotated_features, rots, batch.lengths, config)
@@ -335,8 +338,14 @@ class ModelTrainer:
 
             # Validation
             net.eval()
-            self.validation(net, val_loader, config, cuda_debug=cuda_debug)
-            net.train()
+            with torch.no_grad():
+                self.validation(net, val_loader, config, cuda_debug=cuda_debug)
+            if config.frozen_layers:
+                for name, child in net.named_children():
+                    if name not in config.frozen_layers:
+                        child.train()
+            else:
+                net.train()
 
         print('Finished Training')
         return
@@ -358,6 +367,8 @@ class ModelTrainer:
             self.slam_segmentation_validation(net, val_loader, config, cuda_debug=cuda_debug)
         elif config.dataset_task == 'normals_regression':
             self.regression_validation(net, val_loader, config)
+        elif config.dataset_task == 'collision_prediction':
+            self.collision_validation(net, val_loader, config, cuda_debug=cuda_debug)
         else:
             raise ValueError('No validation method implemented for this network type')
 
@@ -1319,207 +1330,312 @@ class ModelTrainer:
 
         return
 
-
-
-    # Saving methods
-    # ------------------------------------------------------------------------------------------------------------------
-
-    def save_kernel_points(self, model, epoch):
+    def collision_validation(self, net, val_loader, config, time_debug=False, cuda_debug=False):
         """
-        Method saving kernel point disposition and current model weights for later visualization
+        Validation method for slam segmentation models
         """
 
-        if model.config.saving:
+        ############
+        # Initialize
+        ############
 
-            # Create a directory to save kernels of this epoch
-            kernels_dir = join(model.saving_path, 'kernel_points', 'epoch{:d}'.format(epoch))
-            if not exists(kernels_dir):
-                makedirs(kernels_dir)
+        t0 = time.time()
 
-            # Get points
-            all_kernel_points_tf = [v for v in tf.global_variables() if 'kernel_points' in v.name
-                                    and v.name.startswith('KernelPoint')]
-            all_kernel_points = self.sess.run(all_kernel_points_tf)
+        # Do not validate if dataset has no validation cloud
+        if val_loader is None:
+            return
 
-            # Get Extents
-            if False and 'gaussian' in model.config.convolution_mode:
-                all_kernel_params_tf = [v for v in tf.global_variables() if 'kernel_extents' in v.name
-                                        and v.name.startswith('KernelPoint')]
-                all_kernel_params = self.sess.run(all_kernel_params_tf)
-            else:
-                all_kernel_params = [None for p in all_kernel_points]
+        # Choose validation smoothing parameter (0 for no smothing, 0.99 for big smoothing)
+        val_smooth = 0.95
+        softmax = torch.nn.Softmax(1)
 
-            # Save in ply file
-            for kernel_points, kernel_extents, v in zip(all_kernel_points, all_kernel_params, all_kernel_points_tf):
+        # Create folder for validation predictions
+        if not exists(join(config.saving_path, 'val_preds')):
+            makedirs(join(config.saving_path, 'val_preds'))
+        if not exists(join(config.saving_path, 'future_preds')):
+            makedirs(join(config.saving_path, 'future_preds'))
+
+        # initiate the dataset validation containers
+        val_loader.dataset.val_points = []
+        val_loader.dataset.val_labels = []
+
+        # Number of classes including ignored labels
+        nc_tot = val_loader.dataset.num_classes
+
+        #####################
+        # Network predictions
+        #####################
+
+        predictions = []
+        targets = []
+        all_reconstruction_errors = []
+        all_merging_errors = []
+        all_future_errors = []
+        inds = []
+        val_i = 0
+
+        t = [time.time()]
+        last_display = time.time()
+        mean_dt = np.zeros(1)
+
+
+        t1 = time.time()
+
+        # Start validation loop
+        for i, batch in enumerate(val_loader):
+
+            # New time
+            t = t[-1:]
+            t += [time.time()]
+
+            if 'cuda' in self.device.type:
+                batch.to(self.device)
+
+            # Forward pass
+            outputs, outputs_2D = net(batch, config)
+
+
+            # Get probs and labels
+            stk_probs = softmax(outputs).cpu().detach().numpy()
+            lengths = batch.lengths[0].cpu().numpy()
+            f_inds = batch.frame_inds.cpu().numpy()
+            r_inds_list = batch.reproj_inds
+            r_mask_list = batch.reproj_masks
+            labels_list = batch.val_labels
+            sigmoid_2D = nn.Sigmoid()
+            stck_future_preds = sigmoid_2D(outputs_2D).cpu().detach().numpy()
+            stck_future_gts = batch.future_2D.cpu().detach().numpy()
+            torch.cuda.synchronize(self.device)
+
+            # Get predictions and labels per instance
+            # ***************************************
+
+            i0 = 0
+            for b_i, length in enumerate(lengths):
+
+                # Get prediction
+                probs = stk_probs[i0:i0 + length]
+                proj_inds = r_inds_list[b_i]
+                proj_mask = r_mask_list[b_i]
+                frame_labels = labels_list[b_i]
+                s_ind = f_inds[b_i, 0]
+                f_ind = f_inds[b_i, 1]
+
+                # Project predictions on the frame points
+                proj_probs = probs[proj_inds]
+
+                # Safe check if only one point:
+                if proj_probs.ndim < 2:
+                    proj_probs = np.expand_dims(proj_probs, 0)
+
+                # Insert false columns for ignored labels
+                for l_ind, label_value in enumerate(val_loader.dataset.label_values):
+                    if label_value in val_loader.dataset.ignored_labels:
+                        proj_probs = np.insert(proj_probs, l_ind, 0, axis=1)
+
+                # Predicted labels
+                preds = val_loader.dataset.label_values[np.argmax(proj_probs, axis=1)]
+
+                # Save predictions in a binary file
+                filename = '{:s}_{:07d}.npy'.format(val_loader.dataset.sequences[s_ind], f_ind)
+                filepath = join(config.saving_path, 'val_preds', filename)
+                if exists(filepath):
+                    frame_preds = np.load(filepath)
+                else:
+                    frame_preds = np.zeros(frame_labels.shape, dtype=np.uint8)
+                frame_preds[proj_mask] = preds.astype(np.uint8)
+                np.save(filepath, frame_preds)
+
+                # Get the 2D predictions and gt
+                img0 = stck_future_preds[b_i, 0, :, :, :]
+                gt_im0 = np.copy(stck_future_gts[b_i, 0, :, :, :])
+                gt_im1 = stck_future_gts[b_i, 0, :, :, :]
+                gt_im1[:, :, 2] = np.max(stck_future_gts[b_i, 1:, :, :, 2], axis=0)
+                img1 = stck_future_preds[b_i, 1, :, :, :]
+                img = stck_future_preds[b_i, 2:, :, :, :]
+                gt_im = stck_future_gts[b_i, 1:, :, :, :]
+                img[:, :, :, :2] = np.expand_dims(img0[:, :, :2], 0)
+
+                # Get a measure of the 2D performances
+                reconstruction_errors = np.mean(np.abs(img0 - gt_im0), axis=(0, 1))
+                merging_errors = np.mean(np.abs(img1 - gt_im1), axis=(0, 1))
+                future_errors = np.mean(np.abs(img - gt_im), axis=(1, 2))
+                val_loader.dataset.val_2D_reconstruct[s_ind][f_ind] = reconstruction_errors
+                val_loader.dataset.val_2D_future[s_ind][f_ind] = future_errors
+                all_reconstruction_errors.append(reconstruction_errors)
+                all_merging_errors.append(merging_errors)
+                all_future_errors.append(future_errors)
+
+                # Save some of the frame pots
+                if f_ind % 50 == 0:
+                    frame_points = val_loader.dataset.load_points(s_ind, f_ind)
+                    write_ply(filepath[:-4] + '_pots.ply',
+                              [frame_points[:, :3], frame_labels, frame_preds],
+                              ['x', 'y', 'z', 'gt', 'pre'])
+
+                    # Save prediction too in gif format
+                    gifpath = join(config.saving_path, 'future_preds', filename)
+                    fast_save_future_anim(gifpath[:-4] + '_f_gt.gif', gt_im, zoom=5, correction=True)
+                    fast_save_future_anim(gifpath[:-4] + '_f_pre.gif', img, zoom=5, correction=True)
+                    save_zoom_img(gifpath[:-4] + '_0_gt.png', gt_im0, zoom=5, correction=True)
+                    save_zoom_img(gifpath[:-4] + '_0_pre.png', img0, zoom=5, correction=True)
+                    save_zoom_img(gifpath[:-4] + '_1_gt.png', gt_im1, zoom=5, correction=True)
+                    save_zoom_img(gifpath[:-4] + '_1_pre.png', img1, zoom=5, correction=True)
+
+
+                # Update validation confusions
+                frame_C = fast_confusion(frame_labels,
+                                         frame_preds.astype(np.int32),
+                                         val_loader.dataset.label_values)
+                val_loader.dataset.val_confs[s_ind][f_ind, :, :] = frame_C
+
+                # Stack all prediction for this epoch
+                predictions += [preds]
+                targets += [frame_labels[proj_mask]]
+                inds += [f_inds[b_i, :]]
+                val_i += 1
+                i0 += length
+
+            # Average timing
+            t += [time.time()]
+            mean_dt = 0.95 * mean_dt + 0.05 * (np.array(t[1:]) - np.array(t[:-1]))
+
+            # CUDA debug
+            torch.cuda.ipc_collect()
+            if cuda_debug:
+                fmt_str = ' '*10 + '| {:8.0f}Kpts | {:6.0f}MB | {:6.0f}MB | {:6.0f}MB | {:6.0f}MB |'
+                print(fmt_str.format(batch.points[0].shape[0] / 1000,
+                                     torch.cuda.memory_allocated() / 1024 ** 2,
+                                     torch.cuda.max_memory_allocated() / 1024 ** 2,
+                                     torch.cuda.memory_reserved() / 1024 ** 2,
+                                     torch.cuda.max_memory_reserved() / 1024 ** 2))
+                torch.cuda.reset_max_memory_allocated()
+
+            # Display
+            if (t[-1] - last_display) > 1.0:
+                last_display = t[-1]
+                message = 'Validation : {:.1f}% (timings : {:4.2f} {:4.2f})'
+                print(message.format(100 * i / config.validation_size,
+                                     1000 * (mean_dt[0]),
+                                     1000 * (mean_dt[1])))
+
+        t2 = time.time()
+
+        # Confusions for our subparts of validation set
+        Confs = np.zeros((len(predictions), nc_tot, nc_tot), dtype=np.int32)
+        for i, (preds, truth) in enumerate(zip(predictions, targets)):
+
+            # Confusions
+            Confs[i, :, :] = fast_confusion(truth, preds, val_loader.dataset.label_values).astype(np.int32)
+
+        t3 = time.time()
+
+        #######################################
+        # Results on this subpart of validation
+        #######################################
+
+        # Sum all confusions
+        C = np.sum(Confs, axis=0).astype(np.float32)
+
+        # Balance with real validation proportions
+        C *= np.expand_dims(val_loader.dataset.class_proportions / (np.sum(C, axis=1) + 1e-6), 1)
+
+        # Remove ignored labels from confusions
+        for l_ind, label_value in reversed(list(enumerate(val_loader.dataset.label_values))):
+            if label_value in val_loader.dataset.ignored_labels:
+                C = np.delete(C, l_ind, axis=0)
+                C = np.delete(C, l_ind, axis=1)
+
+        # Objects IoU
+        IoUs = IoU_from_confusions(C)
+
+        # Mean 2D errors
+        mean_recons_e = 100 * np.mean(np.stack(all_reconstruction_errors, axis=0), axis=0)
+        mean_merge_e = 100 * np.mean(np.stack(all_merging_errors, axis=0), axis=0)
+        mean_future_e = 100 * np.mean(np.stack(all_future_errors, axis=0), axis=0)[:, 2]
+
+
+        #####################################
+        # Results on the whole validation set
+        #####################################
+
+        t4 = time.time()
+
+        # Sum all validation confusions
+        C_tot = [np.sum(seq_C, axis=0) for seq_C in val_loader.dataset.val_confs if len(seq_C) > 0]
+        C_tot = np.sum(np.stack(C_tot, axis=0), axis=0)
+
+        if time_debug:
+            s = '\n'
+            for cc in C_tot:
+                for c in cc:
+                    s += '{:8.1f} '.format(c)
+                s += '\n'
+            print(s)
+
+        # Remove ignored labels from confusions
+        for l_ind, label_value in reversed(list(enumerate(val_loader.dataset.label_values))):
+            if label_value in val_loader.dataset.ignored_labels:
+                C_tot = np.delete(C_tot, l_ind, axis=0)
+                C_tot = np.delete(C_tot, l_ind, axis=1)
+
+        # Objects IoU
+        val_IoUs = IoU_from_confusions(C_tot)
+
+        t5 = time.time()
+
+        # Saving (optionnal)
+        if config.saving:
+
+            IoU_list = [IoUs, val_IoUs, mean_recons_e, mean_future_e]
+            file_list = ['subpart_IoUs.txt', 'val_IoUs.txt', 'reconstruction_error.txt', 'future_error.txt']
+            for IoUs_to_save, IoU_file in zip(IoU_list, file_list):
 
                 # Name of saving file
-                ply_name = '_'.join(v.name[:-2].split('/')[1:-1]) + '.ply'
-                ply_file = join(kernels_dir, ply_name)
+                test_file = join(config.saving_path, IoU_file)
 
-                # Data to save
-                if kernel_points.ndim > 2:
-                    kernel_points = kernel_points[:, 0, :]
-                if False and 'gaussian' in model.config.convolution_mode:
-                    data = [kernel_points, kernel_extents]
-                    keys = ['x', 'y', 'z', 'sigma']
+                # Line to write:
+                line = ''
+                for IoU in IoUs_to_save:
+                    line += '{:.5f} '.format(IoU)
+                line = line + '\n'
+
+                # Write in file
+                if exists(test_file):
+                    with open(test_file, "a") as text_file:
+                        text_file.write(line)
                 else:
-                    data = kernel_points
-                    keys = ['x', 'y', 'z']
+                    with open(test_file, "w") as text_file:
+                        text_file.write(line)
 
-                # Save
-                write_ply(ply_file, data, keys)
+        # Print instance mean
+        mIoU = 100 * np.mean(IoUs)
+        print('{:s} : subpart mIoU = {:.1f} %'.format(config.dataset, mIoU))
+        mIoU = 100 * np.mean(val_IoUs)
+        print('{:s} :     val mIoU = {:.1f} %'.format(config.dataset, mIoU))
 
-            # Get Weights
-            all_kernel_weights_tf = [v for v in tf.global_variables() if 'weights' in v.name
-                                    and v.name.startswith('KernelPointNetwork')]
-            all_kernel_weights = self.sess.run(all_kernel_weights_tf)
+        # Print 2D errors
+        print('{:s} :  Reconstruct = {:.3f} % / {:.3f} % / {:.3f} %'.format(config.dataset, *list(mean_recons_e)))
+        fmt_str = '{:s} :       Future:\n{:.3f}'
+        for _ in mean_future_e[1::5]:
+            fmt_str += ' / {:.3f}'
+        print(fmt_str.format(config.dataset, *list(mean_future_e)))
 
-            # Save in numpy file
-            for kernel_weights, v in zip(all_kernel_weights, all_kernel_weights_tf):
-                np_name = '_'.join(v.name[:-2].split('/')[1:-1]) + '.npy'
-                np_file = join(kernels_dir, np_name)
-                np.save(np_file, kernel_weights)
+        t6 = time.time()
 
-    # Debug methods
-    # ------------------------------------------------------------------------------------------------------------------
+        # Display timings
+        if time_debug:
+            print('\n************************\n')
+            print('Validation timings:')
+            print('Init ...... {:.1f}s'.format(t1 - t0))
+            print('Loop ...... {:.1f}s'.format(t2 - t1))
+            print('Confs ..... {:.1f}s'.format(t3 - t2))
+            print('IoU1 ...... {:.1f}s'.format(t4 - t3))
+            print('IoU2 ...... {:.1f}s'.format(t5 - t4))
+            print('Save ...... {:.1f}s'.format(t6 - t5))
+            print('\n************************\n')
 
-    def show_memory_usage(self, batch_to_feed):
-
-            for l in range(self.config.num_layers):
-                neighb_size = list(batch_to_feed[self.in_neighbors_f32[l]].shape)
-                dist_size = neighb_size + [self.config.num_kernel_points, 3]
-                dist_memory = np.prod(dist_size) * 4 * 1e-9
-                in_feature_size = neighb_size + [self.config.first_features_dim * 2**l]
-                in_feature_memory = np.prod(in_feature_size) * 4 * 1e-9
-                out_feature_size = [neighb_size[0], self.config.num_kernel_points, self.config.first_features_dim * 2**(l+1)]
-                out_feature_memory = np.prod(out_feature_size) * 4 * 1e-9
-
-                print('Layer {:d} => {:.1f}GB {:.1f}GB {:.1f}GB'.format(l,
-                                                                   dist_memory,
-                                                                   in_feature_memory,
-                                                                   out_feature_memory))
-            print('************************************')
-
-    def debug_nan(self, model, inputs, logits):
-        """
-        NaN happened, find where
-        """
-
-        print('\n\n------------------------ NaN DEBUG ------------------------\n')
-
-        # First save everything to reproduce error
-        file1 = join(model.saving_path, 'all_debug_inputs.pkl')
-        with open(file1, 'wb') as f1:
-            pickle.dump(inputs, f1)
-
-        # First save all inputs
-        file1 = join(model.saving_path, 'all_debug_logits.pkl')
-        with open(file1, 'wb') as f1:
-            pickle.dump(logits, f1)
-
-        # Then print a list of the trainable variables and if they have nan
-        print('List of variables :')
-        print('*******************\n')
-        all_vars = self.sess.run(tf.global_variables())
-        for v, value in zip(tf.global_variables(), all_vars):
-            nan_percentage = 100 * np.sum(np.isnan(value)) / np.prod(value.shape)
-            print(v.name, ' => {:.1f}% of values are NaN'.format(nan_percentage))
-
-
-        print('Inputs :')
-        print('********')
-
-        #Print inputs
-        nl = model.config.num_layers
-        for layer in range(nl):
-
-            print('Layer : {:d}'.format(layer))
-
-            points = inputs[layer]
-            neighbors = inputs[nl + layer]
-            pools = inputs[2*nl + layer]
-            upsamples = inputs[3*nl + layer]
-
-            nan_percentage = 100 * np.sum(np.isnan(points)) / np.prod(points.shape)
-            print('Points =>', points.shape, '{:.1f}% NaN'.format(nan_percentage))
-            nan_percentage = 100 * np.sum(np.isnan(neighbors)) / np.prod(neighbors.shape)
-            print('neighbors =>', neighbors.shape, '{:.1f}% NaN'.format(nan_percentage))
-            nan_percentage = 100 * np.sum(np.isnan(pools)) / np.prod(pools.shape)
-            print('pools =>', pools.shape, '{:.1f}% NaN'.format(nan_percentage))
-            nan_percentage = 100 * np.sum(np.isnan(upsamples)) / np.prod(upsamples.shape)
-            print('upsamples =>', upsamples.shape, '{:.1f}% NaN'.format(nan_percentage))
-
-        ind = 4 * nl
-        features = inputs[ind]
-        nan_percentage = 100 * np.sum(np.isnan(features)) / np.prod(features.shape)
-        print('features =>', features.shape, '{:.1f}% NaN'.format(nan_percentage))
-        ind += 1
-        batch_weights = inputs[ind]
-        ind += 1
-        in_batches = inputs[ind]
-        max_b = np.max(in_batches)
-        print(in_batches.shape)
-        in_b_sizes = np.sum(in_batches < max_b - 0.5, axis=-1)
-        print('in_batch_sizes =>', in_b_sizes)
-        ind += 1
-        out_batches = inputs[ind]
-        max_b = np.max(out_batches)
-        print(out_batches.shape)
-        out_b_sizes = np.sum(out_batches < max_b - 0.5, axis=-1)
-        print('out_batch_sizes =>', out_b_sizes)
-        ind += 1
-        point_labels = inputs[ind]
-        print('point labels, ', point_labels.shape, ', values : ', np.unique(point_labels))
-        print(np.array([int(100 * np.sum(point_labels == l) / len(point_labels)) for l in np.unique(point_labels)]))
-
-        ind += 1
-        if model.config.dataset.startswith('ShapeNetPart_multi'):
-            object_labels = inputs[ind]
-            nan_percentage = 100 * np.sum(np.isnan(object_labels)) / np.prod(object_labels.shape)
-            print('object_labels =>', object_labels.shape, '{:.1f}% NaN'.format(nan_percentage))
-            ind += 1
-        augment_scales = inputs[ind]
-        ind += 1
-        augment_rotations = inputs[ind]
-        ind += 1
-
-        print('\npoolings and upsamples nums :\n')
-
-        #Print inputs
-        for layer in range(nl):
-
-            print('\nLayer : {:d}'.format(layer))
-
-            neighbors = inputs[nl + layer]
-            pools = inputs[2*nl + layer]
-            upsamples = inputs[3*nl + layer]
-
-            max_n = np.max(neighbors)
-            nums = np.sum(neighbors < max_n - 0.5, axis=-1)
-            print('min neighbors =>', np.min(nums))
-
-            if np.prod(pools.shape) > 0:
-                max_n = np.max(pools)
-                nums = np.sum(pools < max_n - 0.5, axis=-1)
-                print('min pools =>', np.min(nums))
-            else:
-                print('pools empty')
-
-
-            if np.prod(upsamples.shape) > 0:
-                max_n = np.max(upsamples)
-                nums = np.sum(upsamples < max_n - 0.5, axis=-1)
-                print('min upsamples =>', np.min(nums))
-            else:
-                print('upsamples empty')
-
-
-        print('\nFinished\n\n')
-        time.sleep(0.5)
-
-
-
-
+        return
 
 
 

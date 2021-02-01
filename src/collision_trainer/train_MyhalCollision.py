@@ -7,7 +7,7 @@
 #
 # ----------------------------------------------------------------------------------------------------------------------
 #
-#      Callable script to start a training on MyhalSim dataset
+#      Callable script to start a training on MyhalCollision dataset
 #
 # ----------------------------------------------------------------------------------------------------------------------
 #
@@ -22,23 +22,24 @@
 #
 
 # Common libs
+import sys
+import time
 import signal
 import os
 import numpy as np
-import sys
 import torch
-import time
 
 
 # Dataset
 from slam.PointMapSLAM import pointmap_slam, detect_short_term_movables, annotation_process
 from slam.dev_slam import bundle_slam, pointmap_for_AMCL
 from torch.utils.data import DataLoader
-from datasets.MyhalSim import MyhalSimDataset, MyhalSimSlam, MyhalSimSampler, MyhalSimCollate
+from datasets.MyhalCollision import MyhalCollisionDataset, MyhalCollisionSlam, MyhalCollisionSampler, \
+    MyhalCollisionCollate
 
 from utils.config import Config
 from utils.trainer import ModelTrainer
-from models.architectures import KPFCNN
+from models.architectures import KPCollider
 
 from os.path import exists, join
 from os import makedirs
@@ -50,7 +51,7 @@ from os import makedirs
 #       \******************/
 #
 
-class MyhalSimConfig(Config):
+class MyhalCollisionConfig(Config):
     """
     Override the parameters you want to modify for this dataset
     """
@@ -60,7 +61,7 @@ class MyhalSimConfig(Config):
     ####################
 
     # Dataset name
-    dataset = 'MyhalSim'
+    dataset = 'MyhalCollision'
 
     # Number of classes in the dataset (This value is overwritten by dataset class when Initializating dataset).
     num_classes = None
@@ -75,7 +76,7 @@ class MyhalSimConfig(Config):
     # Architecture definition
     #########################
 
-    # Define layers
+    # Define layers (only concerning the 3D architecture)
     architecture = ['simple',
                     'resnetb_strided',
                     'resnetb',
@@ -94,26 +95,56 @@ class MyhalSimConfig(Config):
                     'nearest_upsample',
                     'unary']
 
+    ######################
+    # Collision parameters
+    ######################
+
+    # Number of propagating layer
+    n_2D_layers = 30
+
+    # Total time propagated
+    T_2D = 3.0
+
+    # Size of 2D convolution grid
+    dl_2D = 0.1
+
+    # Power of the loss for the 2d predictions
+    power_2D_init_loss = 1.0
+    power_2D_prop_loss = 5.0
+    neg_pos_ratio = 3.0
+
+    # Detach the 2D network from the 3D network when backpropagating gradient
+    detach_2D = False
+
+    # Share weights for 2D network TODO: see if not sharing makes a difference
+    shared_2D = True
+
+    # Trainable backend 3D network
+    train_3D = True
+    #frozen_layers = ['encoder_blocks', 'decoder_blocks', 'head_mlp', 'head_softmax']
+    frozen_layers = []
+
+
     ###################
     # KPConv parameters
     ###################
 
     # Radius of the input sphere
-    in_radius = 4.0
-    val_radius = 51.0
-    n_frames = 1
+    in_radius = 6.0
+    val_radius = 6.0
+    n_frames = 3
     max_in_points = -1
     max_val_points = -1
 
     # Number of batch
-    batch_num = 10
-    val_batch_num = 1
+    batch_num = 6
+    val_batch_num = 6
 
     # Number of kernel points
     num_kernel_points = 15
 
     # Size of the first subsampling grid in meter
-    first_subsampling_dl = 0.03
+    first_subsampling_dl = 0.05
 
     # Radius of convolution in "number grid cell". (2.5 is the standard value)
     conv_radius = 2.5
@@ -132,7 +163,7 @@ class MyhalSimConfig(Config):
 
     # Choice of input features
     first_features_dim = 128
-    in_features_dim = 1
+    in_features_dim = 3
 
     # Can the network learn modulations
     modulated = False
@@ -166,19 +197,19 @@ class MyhalSimConfig(Config):
     epoch_steps = 500
 
     # Number of validation examples per epoch
-    validation_size = 100
+    validation_size = 30
 
     # Number of epoch between each checkpoint
     checkpoint_gap = 50
 
     # Augmentations
     augment_scale_anisotropic = True
-    augment_symmetries = [True, False, False]
+    augment_symmetries = [False, False, False]
     augment_rotation = 'vertical'
     augment_scale_min = 0.9
     augment_scale_max = 1.1
     augment_noise = 0.001
-    augment_color = 0.8
+    augment_color = 1.0
 
     # Do we nee to save convergence
     saving = True
@@ -207,7 +238,8 @@ if __name__ == '__main__':
     # Day used as map
     map_day = '2020-10-02-13-39-05'
 
-    # Fisrt dataset: successful tours without filtering Initiate dataset. Remember last day is used as validation for the training
+    # Fisrt dataset: successful tours without filtering Initiate dataset. Remember last day is used as validation for
+    # the training
     train_days_0 = ['2020-10-12-22-06-54',
                     '2020-10-12-22-14-48',
                     '2020-10-12-22-28-15']
@@ -226,55 +258,31 @@ if __name__ == '__main__':
                     '2020-10-16-14-36-12',
                     '2020-10-16-14-56-40']
 
-    # Third dataset
-    train_days_2 = ['2020-10-12-22-06-54',
-                    '2020-10-12-22-14-48',
-                    '2020-10-12-22-28-15',
-                    '2020-10-16-12-29-11',
-                    '2020-10-16-12-37-53',
-                    '2020-10-16-12-50-41',
-                    '2020-10-16-13-06-53',
-                    '2020-10-16-13-20-04',
-                    '2020-10-16-13-38-50',
-                    '2020-10-16-14-01-49',
-                    '2020-10-16-14-36-12',
-                    '2020-10-16-14-56-40',
-                    '2020-10-19-17-25-50',
-                    '2020-10-19-17-34-13',
-                    '2020-10-19-17-47-10',
-                    '2020-10-19-18-03-33',
-                    '2020-10-19-18-14-42',
-                    '2020-10-19-18-33-04',
-                    '2020-10-19-18-55-15',
-                    '2020-10-19-20-04-41',
-                    '2020-10-19-20-23-25',
-                    '2020-10-22-21-17-35',
-                    '2020-10-22-21-37-50',
-                    '2020-10-22-22-04-14']
-
 
     ######################
     # Automatic Annotation
     ######################
 
     # Choose the dataset
-    train_days = train_days_2
+    train_days = np.array(train_days_1)
+    val_inds = [5, 11]
+    train_inds = [i for i in range(len(train_days)) if i not in val_inds]
 
     # Check if we need to redo annotation (only if there is no video)
     redo_annot = False
     for day in train_days:
-        annot_path = join('../../Myhal_Simulation/annotated_frames', day)
+        annot_path = join('../../../Myhal_Simulation/annotated_frames', day)
         if not exists(annot_path):
             redo_annot = True
             break
 
     # train_days = ['2020-10-20-16-30-49']
-    redo_annot = True
+    # redo_annot = True
     if redo_annot:
 
         # Initiate dataset
-        slam_dataset = MyhalSimSlam(day_list=train_days, map_day=map_day)
-        #slam_dataset = MyhalSimDataset(first_day='2020-06-24-14-36-49', last_day='2020-06-24-14-40-33')
+        slam_dataset = MyhalCollisionSlam(day_list=train_days, map_day=map_day)
+        #slam_dataset = MyhalCollisionDataset(first_day='2020-06-24-14-36-49', last_day='2020-06-24-14-40-33')
 
         # Create a refined map from the map_day
         slam_dataset.refine_map()
@@ -292,16 +300,18 @@ if __name__ == '__main__':
         # Groundtruth annotation
         annotation_process(slam_dataset, on_gt=False)
 
-        # TODO: Loop closure for aligning days together when niot simulation
+        # TODO: Loop closure for aligning days together when not simulation
 
-        a = 1/0
+        slam_dataset.collision_annotation()
+
+        a = 1 / 0
 
     ############################
     # Initialize the environment
     ############################
 
     # Set which gpu is going to be used
-    GPU_ID = '1'
+    GPU_ID = '3'
 
     # Set GPU visible device
     os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
@@ -311,11 +321,15 @@ if __name__ == '__main__':
     ###############
 
     # Choose here if you want to start training from a previous snapshot (None for new training)
-    # previous_training_path = 'Log_2020-03-19_19-53-27'
     previous_training_path = ''
+    # previous_training_path = 'Log_2020-10-16_23-40-33'
+    # TODO: Retrain network with current parameters (subsamplinf in_radius)
+    #       Load weight better
 
     # Choose index of checkpoint to start from. If None, uses the latest chkp
-    chkp_idx = None
+    chkp_idx = 0
+
+    # Load previous weights
     if previous_training_path:
 
         # Find all snapshot in the chosen training folder
@@ -341,7 +355,7 @@ if __name__ == '__main__':
     print('****************')
 
     # Initialize configuration class
-    config = MyhalSimConfig()
+    config = MyhalCollisionConfig()
     if previous_training_path:
         config.load(os.path.join('results', previous_training_path))
         config.saving_path = None
@@ -351,25 +365,24 @@ if __name__ == '__main__':
         config.saving_path = sys.argv[1]
 
     # Initialize datasets (dummy validation)
-    train_days += [train_days[-1]]
-    training_dataset = MyhalSimDataset(config, train_days, set='training', balance_classes=True)
-    test_dataset = MyhalSimDataset(config, train_days, set='validation', balance_classes=False)
+    training_dataset = MyhalCollisionDataset(config, train_days[train_inds], chosen_set='training', balance_classes=True)
+    test_dataset = MyhalCollisionDataset(config, train_days[val_inds], chosen_set='validation', balance_classes=False)
 
     # Initialize samplers
-    training_sampler = MyhalSimSampler(training_dataset)
-    test_sampler = MyhalSimSampler(test_dataset)
+    training_sampler = MyhalCollisionSampler(training_dataset)
+    test_sampler = MyhalCollisionSampler(test_dataset)
 
     # Initialize the dataloader
     training_loader = DataLoader(training_dataset,
                                  batch_size=1,
                                  sampler=training_sampler,
-                                 collate_fn=MyhalSimCollate,
+                                 collate_fn=MyhalCollisionCollate,
                                  num_workers=config.input_threads,
                                  pin_memory=True)
     test_loader = DataLoader(test_dataset,
                              batch_size=1,
                              sampler=test_sampler,
-                             collate_fn=MyhalSimCollate,
+                             collate_fn=MyhalCollisionCollate,
                              num_workers=config.input_threads,
                              pin_memory=True)
 
@@ -396,7 +409,7 @@ if __name__ == '__main__':
 
     # Define network model
     t1 = time.time()
-    net = KPFCNN(config, training_dataset.label_values, training_dataset.ignored_labels)
+    net = KPCollider(config, training_dataset.label_values, training_dataset.ignored_labels)
 
     debug = False
     if debug:
@@ -409,6 +422,16 @@ if __name__ == '__main__':
         print('\n*************************************\n')
         print("Model size %i" % sum(param.numel() for param in net.parameters() if param.requires_grad))
         print('\n*************************************\n')
+
+    # Freeze layers if necessary
+    if config.frozen_layers:
+        for name, child in net.named_children():
+            if name in config.frozen_layers:
+                for param in child.parameters():
+                    if param.requires_grad:
+                        param.requires_grad = False
+                child.eval()
+
 
     # Define a trainer class
     trainer = ModelTrainer(net, config, chkp_path=chosen_chkp)

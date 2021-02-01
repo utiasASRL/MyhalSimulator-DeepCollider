@@ -38,35 +38,11 @@ from slam.cpp_slam import update_pointmap, polar_normals, point_to_map_icp, \
 from slam.dev_slam import normal_filtering, bundle_icp, frame_H_to_points, estimate_normals_planarity_debug, \
     cart2pol, get_odometry, ssc_to_homo, extract_ground, save_trajectory
 
-from scipy.spatial import ConvexHull, convex_hull_plot_2d
+#from scipy.spatial import ConvexHull, convex_hull_plot_2d
 from sklearn.neighbors import KDTree
 
 from utils.metrics import fast_confusion
 
-
-def plane_area(plane_points, plane_normal):
-
-    # Get plane vector base
-    norm_n = np.linalg.norm(plane_normal)
-    candidate_u = [np.cross(plane_normal, [1, 0, 0])]
-    candidate_u += [np.cross(plane_normal, [0, 1, 0])]
-    candidate_u += [np.cross(plane_normal, [0, 0, 1])]
-    candidate_norms = [np.linalg.norm(c_u) for c_u in candidate_u]
-    chosen_u = int(np.argmax(candidate_norms))
-    u1 = candidate_u[chosen_u] / candidate_norms[chosen_u]
-    u2 = np.cross(plane_normal, u1) / norm_n
-
-    # Project them in the plane 2D space
-    proj_M = np.vstack((u1, u2)).T
-    proj_points = np.matmul(plane_points, proj_M)
-
-    # Get convex hull area
-    hull = ConvexHull(proj_points)
-
-
-    print(hull.area, hull.volume)
-
-    return hull.volume
 
 class PointMap:
 
@@ -2086,6 +2062,8 @@ def annotation_process(dataset,
         if not exists(annot_folder):
             makedirs(annot_folder)
 
+        print(annot_folder)
+
         # Create KDTree on the map
         print('Reprojection of map day {:s}'.format(day))
         map_tree = None
@@ -2163,6 +2141,7 @@ def extract_map_ground(pointmap, out_folder,
             pickle.dump(plane_mask, file)
 
     return plane_mask
+
 
 def double_still_reproj(points, counts, margin=0.1):
 

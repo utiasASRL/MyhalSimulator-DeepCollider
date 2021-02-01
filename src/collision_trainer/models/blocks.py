@@ -92,7 +92,7 @@ def closest_pool(x, inds):
     x = torch.cat((x, torch.zeros_like(x[:1, :])), 0)
 
     # Get features for each pooling location [n2, d]
-    return gather(x, inds[:, 0])
+    return gather(x, inds[..., 0])
 
 
 def max_pool(x, inds):
@@ -110,8 +110,26 @@ def max_pool(x, inds):
     pool_features = gather(x, inds)
 
     # Pool the maximum [n2, d]
-    max_features, _ = torch.max(pool_features, 1)
+    max_features, _ = torch.max(pool_features, dim=-2)
     return max_features
+
+
+def avg_pool(x, inds):
+    """
+    Pools features with the maximum values.
+    :param x: [n1, d] features matrix
+    :param inds: [X, X, ..., X, max_num] pooling indices
+    :return: [X, X, ..., X, d] pooled features matrix
+    """
+
+    # Add a last row with minimum features for shadow pools
+    x = torch.cat((x, torch.zeros_like(x[:1, :])), 0)
+
+    # Get all features for each pooling location [X, X, ..., X, max_num, d]
+    pool_features = gather(x, inds)
+
+    # Pool the maximum [X, X, ..., X, d]
+    return torch.mean(pool_features, dim=-2)
 
 
 def global_average(x, batch_lengths):
@@ -1086,11 +1104,9 @@ class BatchNormBlock(nn.Module):
         self.bn_momentum = bn_momentum
         self.use_bn = use_bn
         self.in_dim = in_dim
-        if self.use_bn:
-            self.batch_norm = nn.BatchNorm1d(in_dim, momentum=bn_momentum)
-            #self.batch_norm = nn.InstanceNorm1d(in_dim, momentum=bn_momentum)
-        else:
-            self.bias = Parameter(torch.zeros(in_dim, dtype=torch.float32), requires_grad=True)
+        self.batch_norm = nn.BatchNorm1d(in_dim, momentum=bn_momentum)
+        #self.batch_norm = nn.InstanceNorm1d(in_dim, momentum=bn_momentum)
+        self.bias = Parameter(torch.zeros(in_dim, dtype=torch.float32), requires_grad=True)
         return
 
     def reset_parameters(self):
@@ -1108,9 +1124,10 @@ class BatchNormBlock(nn.Module):
             return x + self.bias
 
     def __repr__(self):
-        return 'BatchNormBlock(in_feat: {:d}, momentum: {:.3f}, only_bias: {:s})'.format(self.in_dim,
-                                                                                         self.bn_momentum,
-                                                                                         str(not self.use_bn))
+        return 'BatchNormBlock(in_feat: {:d}, momentum: {:.3f}, only_bias: {:s}, training: {})'.format(self.in_dim,
+                                                                                                       self.bn_momentum,
+                                                                                                       str(not self.use_bn),
+                                                                                                       self.training)
 
 
 class UnaryBlock(nn.Module):
@@ -1205,7 +1222,7 @@ class LRFBlock(nn.Module):
         new_lrf = new_lrf.reshape((-1, self.up_factor, self.in_n_LRF, self.p_dim, self.p_dim))
 
         # To predict a rotation matrix start from identity
-        self.pred_rots = new_lrf + self.bias #+ torch.eye(self.p_dim, dtype=torch.float32, device=new_lrf.device)
+        self.pred_rots = new_lrf + self.bias  # + torch.eye(self.p_dim, dtype=torch.float32, device=new_lrf.device)
 
         # Reshape old lrf for the up_factor [n_points, in_n_LRF, dim, dim]
         lrf = lrf.detach().unsqueeze(1)
@@ -1376,7 +1393,7 @@ class ResnetBottleneckBlock(nn.Module):
                                       p_dim=config.in_points_dim)
 
         else:
-        # KPConv block
+            # KPConv block
             self.KPConv = KPConv(config.num_kernel_points,
                                  config.in_points_dim,
                                  out_dim // 4,
@@ -1517,4 +1534,240 @@ class MaxPoolBlock(nn.Module):
 
     def forward(self, x, batch):
         return max_pool(x, batch.pools[self.layer_ind + 1])
+
+
+class ProjectorBlock(nn.Module):
+
+    def __init__(self, detached, pooling='avg'):
+        """
+        Initialize a max pooling block with its ReLU and BatchNorm.
+        """
+        super(ProjectorBlock, self).__init__()
+        self.detached = detached
+        self.pooling = pooling
+        return
+
+    def forward(self, x, batch):
+
+        if self.pooling == 'avg':
+            pooling_fn = avg_pool
+        elif self.pooling == 'max':
+            pooling_fn = max_pool
+        elif self.pooling == 'closest':
+            pooling_fn = closest_pool
+        else:
+            raise ValueError('Unknown pooling function name in ProjectorBlock: ' + self.pooling)
+
+        # Get flat pooling indices or gradient is bugged
+        inds = batch.pools_2D.detach()
+        B = int(inds.shape[0])
+        L = int(inds.shape[1])
+        inds_flat = torch.reshape(inds, (B*L*L, -1))        
+
+        # Get pooled features with shape [B*L*L, D]
+        if self.detached:
+            x_2D = pooling_fn(x.detach(), inds_flat)
+        else:
+            x_2D = pooling_fn(x, inds_flat)
+
+        # Reshape into [B, L, L, D]
+        x_2D = torch.reshape(x_2D, (B, L, L, -1))
+
+
+        # import numpy as np
+        # import matplotlib.pyplot as plt
+        # imgs = x_2D.detach().cpu().numpy()
+        # for i, img in enumerate(imgs):
+        #     img = np.sum(np.abs(img), axis=-1)
+        #     plt.subplots()
+        #     imgplot = plt.imshow(img)
+        #     print(batch.future_2D.shape)
+        #     gt_im = batch.future_2D.detach().cpu().numpy()[i, 0, :, :]
+        #     plt.subplots()
+        #     imgplot = plt.imshow(gt_im)
+        #     plt.show()
+
+
+
+        # Permute into [B, D, L, L]
+        return x_2D.permute(0, 3, 1, 2)
+
+
+class Unary2DBlock(nn.Module):
+
+    def __init__(self, in_dim, out_dim):
+        super(Unary2DBlock, self).__init__()
+
+        # Get other parameters
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+
+        # First downscaling mlp
+        self.conv1 = nn.Conv2d(in_dim, out_dim, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_dim)
+
+        # Other operations
+        self.leaky_relu = nn.LeakyReLU(0.1)
+
+        return
+
+    def forward(self, x):
+        return self.leaky_relu(self.bn1(self.conv1(x)))
+        
+    def __repr__(self):
+        return 'Unary2DBlock({:d}, {:d})'.format(self.in_dim, self.out_dim)
+
+
+class Resnet2DBlock(nn.Module):
+
+    def __init__(self, in_dim, out_dim, stride=1):
+        super(Resnet2DBlock, self).__init__()
+
+        # Get other parameters
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.stride = stride
+
+
+        # First downscaling mlp
+        self.conv1 = nn.Conv2d(in_dim, out_dim // 4, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_dim // 4)
+        
+        # Conv block
+        self.conv2 = nn.Conv2d(out_dim // 4, out_dim // 4, kernel_size=3, bias=False, padding=1, stride=stride)
+        self.bn2 = nn.BatchNorm2d(out_dim // 4)
+        
+        # Second upscaling mlp
+        self.conv3 = nn.Conv2d(out_dim // 4, out_dim, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(out_dim)
+
+        # Shortcut optional mpl
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_dim != out_dim:
+            self.shortcut = nn.Sequential(nn.Conv2d(in_dim, out_dim, kernel_size=1, stride=stride, bias=False),
+                                          nn.BatchNorm2d(out_dim))
+
+        # Other operations
+        self.leaky_relu = nn.LeakyReLU(0.1)
+
+        return
+
+
+    def forward(self, x):
+        out = self.leaky_relu(self.bn1(self.conv1(x)))
+        out = self.leaky_relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        out += self.shortcut(x)
+        out = self.leaky_relu(out)
+        return out
+
+
+    def __repr__(self):
+        return 'Resnet2DBlock({:d}, {:d}, k=3, stride={:d})'.format(self.in_dim, self.out_dim, self.stride)
+
+
+class ResNet2DLayer(nn.Module):
+    """
+    A ResNet layer composed by `n` blocks stacked one after the other
+    """
+    def __init__(self, in_dim, out_dim, downsampling=False, n=1):
+        super(ResNet2DLayer, self).__init__()
+
+        if downsampling:
+            stride0 = 2
+        else:
+            stride0 = 1
+
+        self.blocks = nn.Sequential(
+            Resnet2DBlock(in_dim, out_dim, stride=stride0),
+            *[Resnet2DBlock(out_dim, out_dim, stride=1) for _ in range(n - 1)]
+        )
+
+    def forward(self, x):
+        x = self.blocks(x)
+        return x
+
+
+class Initial2DBlock(nn.Module):
+
+    def __init__(self, in_dim, out_dim, levels=3):
+        super(Initial2DBlock, self).__init__()
+
+        # Get other parameters
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.levels = levels
+
+        # Define encoder
+        self.resnet_layers = nn.ModuleList()
+        current_dim = out_dim
+        self.resnet_layers.append(ResNet2DLayer(in_dim, current_dim, downsampling=False, n=3))
+        for _ in range(levels - 1):
+            self.resnet_layers.append(ResNet2DLayer(current_dim, current_dim*2, downsampling=True, n=3))
+            current_dim *= 2
+
+        # Define decoder
+        self.up_layers = nn.ModuleList()
+        for _ in range(levels - 1):
+            current_dim = current_dim // 2
+            self.up_layers.append(Unary2DBlock(current_dim + current_dim*2, current_dim))
+
+        return
+
+
+    def forward(self, x):
+
+        # Encoder 128 -> 128 -> 256 -> 512  (50, 50, 25, 12)
+        skips = []
+        out_sizes = []
+        for resnet_layer in self.resnet_layers:
+            x = resnet_layer(x)
+            skips.append(x)
+            out_sizes.append(x[0, 0, :, :].shape)
+
+        # Decoder
+        out_sizes.pop()
+        skips.pop()
+        for up_layer in self.up_layers:
+            x = nn.functional.interpolate(x, size=out_sizes.pop(), mode='bilinear', align_corners=True)
+            x = torch.cat([x, skips.pop()], dim=1)
+            x = up_layer(x)
+
+        return x
+
+
+class Propagation2DBlock(nn.Module):
+
+
+    def __init__(self, in_dim, out_dim, stride=1):
+        """
+        Initialize a resnet bottleneck block.
+        :param in_dim: dimension input features
+        :param out_dim: dimension input features
+        :param radius: current radius of convolution
+        :param config: parameters
+        """
+        super(Propagation2DBlock, self).__init__()
+
+        # Get other parameters
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+
+        # Perform a few resnet convolution
+        self.resnet_convs = nn.ModuleList()
+        self.resnet_convs.append(Resnet2DBlock(in_dim, out_dim))
+        for i in range(1):
+            self.resnet_convs.append(Resnet2DBlock(out_dim, out_dim))
+
+        return
+
+
+    def forward(self, x):
+        for resnet_convs in self.resnet_convs:
+            x = resnet_convs(x)
+        return x
+
+
+
+
 

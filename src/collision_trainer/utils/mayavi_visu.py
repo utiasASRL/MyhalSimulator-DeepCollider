@@ -29,6 +29,10 @@ from sklearn.neighbors import KDTree
 from os import makedirs, remove, rename, listdir
 from os.path import exists, join
 import time
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+import imageio
+from PIL import Image
 
 import sys
 
@@ -38,6 +42,9 @@ from utils.metrics import fast_confusion, IoU_from_confusions
 
 # Configuration class
 from utils.config import Config
+
+
+
 
 
 def show_ModelNet_models(all_points):
@@ -949,7 +956,102 @@ def compare_Shapenet_results(logs, log_names):
     mlab.show()
 
 
+def save_future_anim(gif_name, future_imgs, close=False):
 
+    fig, ax = plt.subplots()
+    im = plt.imshow(future_imgs[0])
+
+    def animate(i):
+        im.set_array(future_imgs[i])
+        return [im]
+
+    anim = FuncAnimation(fig, animate,
+                         frames=np.arange(future_imgs.shape[0]),
+                         interval=50,
+                         blit=True)
+    anim.save(gif_name, fps=20)
+
+    if close:
+        plt.close(fig)
+        return
+    else:
+        return fig, anim
+
+
+def fast_save_future_anim(gif_name, future_imgs, zoom=1, correction=False, k_background=True):
+
+    if (future_imgs.dtype == np.uint8):
+        future_imgs = future_imgs.astype(np.float32) / 255
+
+    if k_background:
+        colored_img = (future_imgs[..., [2, 0, 1]] * 255).astype(np.uint8)
+        background = np.array([0, 0, 0], dtype=np.float64)
+        shortT1 = np.array([1.0, 0, 0], dtype=np.float64)
+        shortT2 = np.array([1.0, 1.0, 0], dtype=np.float64)
+    else:
+        colored_img = ((1.0 - future_imgs[..., [1, 2, 0]]) * 255).astype(np.uint8)
+        background = np.array([1, 1, 1], dtype=np.float64)
+        shortT1 = np.array([1.0, 0, 0], dtype=np.float64)
+        shortT2 = np.array([1.0, 1.0, 0], dtype=np.float64)
+
+    if correction:
+        resolution = 256
+        shortT1 = np.array([1.0, 0, 0], dtype=np.float64)
+        shortT2 = np.array([1.0, 1.0, 0], dtype=np.float64)
+        cmap_shortT = np.vstack((np.linspace(background, shortT1, resolution),
+                                np.linspace(shortT1, shortT2, resolution)))
+        cmap_shortT = (cmap_shortT * 255).astype(np.uint8)                        
+        shortT = future_imgs[..., 2]
+        mask = shortT > 0.05
+        inds = np.around(shortT * (cmap_shortT.shape[0] - 1)).astype(np.int32)
+        pooled_cmap = cmap_shortT[inds]
+        colored_img[mask] = pooled_cmap[mask]
+    
+    if zoom > 1:
+        colored_img = np.repeat(colored_img, zoom, axis=1)
+        colored_img = np.repeat(colored_img, zoom, axis=2)
+
+    imageio.mimsave(gif_name, colored_img, fps=20)
+    return
+
+
+
+def save_zoom_img(im_name, img, zoom=1, correction=False, k_background=True):
+
+    if (img.dtype == np.uint8):
+        img = img.astype(np.float32) / 255
+
+    if k_background:
+        colored_img = (img[..., [2, 0, 1]] * 255).astype(np.uint8)
+        background = np.array([0, 0, 0], dtype=np.float64)
+        shortT1 = np.array([1.0, 0, 0], dtype=np.float64)
+        shortT2 = np.array([1.0, 1.0, 0], dtype=np.float64)
+    else:
+        colored_img = ((1.0 - img[..., [1, 2, 0]]) * 255).astype(np.uint8)
+        background = np.array([1, 1, 1], dtype=np.float64)
+        shortT1 = np.array([1.0, 0, 0], dtype=np.float64)
+        shortT2 = np.array([1.0, 1.0, 0], dtype=np.float64)
+
+    if correction:
+        resolution = 256
+        shortT1 = np.array([1.0, 0, 0], dtype=np.float64)
+        shortT2 = np.array([1.0, 1.0, 0], dtype=np.float64)
+        cmap_shortT = np.vstack((np.linspace(background, shortT1, resolution),
+                                np.linspace(shortT1, shortT2, resolution)))
+        cmap_shortT = (cmap_shortT * 255).astype(np.uint8)                        
+        shortT = img[..., 2]
+        mask = shortT > 0.05
+        inds = np.around(shortT * (cmap_shortT.shape[0] - 1)).astype(np.int32)
+        pooled_cmap = cmap_shortT[inds]
+        colored_img[mask] = pooled_cmap[mask]
+
+    
+    if zoom > 1:
+        colored_img = np.repeat(colored_img, zoom, axis=0)
+        colored_img = np.repeat(colored_img, zoom, axis=1)
+
+    imageio.imsave(im_name, colored_img)
+    return
 
 
 

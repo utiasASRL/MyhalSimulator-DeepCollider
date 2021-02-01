@@ -364,7 +364,7 @@ class PointCloudDataset(Dataset):
 
             elif self.config.augment_rotation == 'all':
 
-                    R = get_random_rotations(shape=None)
+                R = get_random_rotations(shape=None)
 
         R = R.astype(np.float32)
 

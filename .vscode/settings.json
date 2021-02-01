@@ -13,8 +13,11 @@
         "/home/hth/catkin_ws/devel/lib/python3/dist-packages"
     ],
 
-    "python.linting.pylintEnabled": true,
-    "python.linting.enabled": true,
+    "python.formatting.provider": "autopep8",
+    "python.formatting.autopep8Args": [
+        "--ignore=E302,E265,E306",
+        "--max-line-length=200"
+    ],
 
     "files.watcherExclude": {
         "**/.git/objects/**": true,
@@ -26,6 +29,10 @@
         "scripts/**": true,
         "logs/**": true
     
-    }
+    },
+
+    "python.linting.enabled": true,
+    "python.linting.pylintEnabled": false,
+    "python.linting.flake8Enabled": true,
 
 }

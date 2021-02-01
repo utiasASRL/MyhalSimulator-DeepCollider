@@ -21,6 +21,7 @@
 #       \**********************************/
 #
 
+
 # Common libs
 import sys
 import time
@@ -29,22 +30,25 @@ import pickle
 import yaml
 import torch
 from multiprocessing import Lock
-from datasets.common import PointCloudDataset
+from datasets.common import PointCloudDataset, batch_neighbors
 from torch.utils.data import Sampler
 from utils.config import bcolors
 from datasets.common import grid_subsampling
 
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as scipyR
+from sklearn.neighbors import KDTree
 from slam.PointMapSLAM import PointMap, extract_map_ground, extract_ground
 from slam.cpp_slam import update_pointmap, polar_normals, point_to_map_icp, slam_on_sim_sequence, ray_casting_annot
 from slam.dev_slam import frame_H_to_points, interp_pose, rot_trans_diffs, normals_orientation, \
     save_trajectory
 from utils.ply import read_ply, write_ply
+from utils.mayavi_visu import save_future_anim, fast_save_future_anim
 
 # OS functions
 from os import listdir, makedirs
 from os.path import exists, join, isdir, getsize
+
 
 # ----------------------------------------------------------------------------------------------------------------------
 #
@@ -52,7 +56,7 @@ from os.path import exists, join, isdir, getsize
 #       \************************************/
 
 
-class MyhalSimSlam:
+class MyhalCollisionSlam:
     def __init__(self,
                  only_day_1=False,
                  first_day='',
@@ -62,7 +66,7 @@ class MyhalSimSlam:
                  verbose=1):
 
         # Name of the dataset
-        self.name = 'MyhalSimSlam'
+        self.name = 'MyhalCollisionSlam'
 
         # Data path
         self.original_path = '../../../Myhal_Simulation'
@@ -647,8 +651,7 @@ class MyhalSimSlam:
                             gt_i1 = gt_i0 + 1
 
                         # Interpolate the ground truth pose at current time
-                        interp_t = (save_f_t - gt_t[gt_i0]) / (gt_t[gt_i1] -
-                                                               gt_t[gt_i0])
+                        interp_t = (save_f_t - gt_t[gt_i0]) / (gt_t[gt_i1] - gt_t[gt_i0])
                         world_H = interp_pose(interp_t, gt_H[gt_i0],
                                               gt_H[gt_i1])
 
@@ -1438,8 +1441,7 @@ class MyhalSimSlam:
                     for save_i, save_f_t in enumerate(frame_times[i0:i1]):
 
                         # Load points
-                        points = self.load_frame_points(frame_names[i0 +
-                                                                    save_i])
+                        points = self.load_frame_points(frame_names[i0 + save_i])
 
                         # Transformation of the lidar (gt is in body frame)
                         H_velo_world = transform_list[i0 + save_i]
@@ -1637,13 +1639,6 @@ class MyhalSimSlam:
             with open(filename, 'wb') as file:
                 pickle.dump(
                     (frame_names, all_H[:len(frame_names)], 1, pointmap), file)
-
-            # TODO: Now we can annotate
-            #       - Save list of transformations
-            #       - Rebuild the map with spherical centroids????
-            #       - Verify that using init_map gets better wall annotations
-            #       - Implement a loop closure for better maps????
-            # TODO: Save translation and rotation error in traj.ply
 
     def map_from_frames(self,
                         frame_names,
@@ -2223,6 +2218,8 @@ class MyhalSimSlam:
         # LOOP ON DAYS
         ##############
 
+        print(self.days)
+
         # Get remove point form each day independently
         # Otherwise if a table is there in only one day, it will not be removed.
         for d, day in enumerate(self.days):
@@ -2284,7 +2281,7 @@ class MyhalSimSlam:
             name_FIFO = []
 
             # Create KDTree on the map
-            print('Collision detection day {:s}'.format(day))
+            print('Start loop')
             N = len(frame_names)
             for i, f_name in enumerate(frame_names):
 
@@ -2342,15 +2339,14 @@ class MyhalSimSlam:
                     pts_FIFO.pop(0)
                     annot_FIFO.pop(0)
                     name_FIFO.pop(0)
-                
+
                 debug_n = 50
                 if i % debug_n == debug_n - 1:
-                    
+
                     ply_name = join(out_folder, f_name.split('/')[-1])
                     write_ply(ply_name,
-                            [world_pts, f_annot],
-                            ['x', 'y', 'z', 'classif'])
-
+                              [world_pts, f_annot],
+                              ['x', 'y', 'z', 'classif'])
 
                 # Timing
                 t += [time.time()]
@@ -2358,9 +2354,9 @@ class MyhalSimSlam:
                 print(
                     'Collisions {:s} {:3d}  --- {:5.1f}%   {:6.1f} ms'.format(
                         day, i + 1, 100 * (i + 1) / N, dt))
-            print('OK')
 
-            return
+        print('OK')
+        return
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -2369,53 +2365,53 @@ class MyhalSimSlam:
 #       \******************************/
 
 
-class MyhalSimDataset(PointCloudDataset):
-    """Class to handle MyhalSim dataset."""
+class MyhalCollisionDataset(PointCloudDataset):
+    """Class to handle MyhalCollision dataset."""
 
     def __init__(self,
                  config,
                  day_list,
-                 set='training',
+                 chosen_set='training',
                  balance_classes=True,
                  load_data=True):
-        PointCloudDataset.__init__(self, 'MyhalSim')
+        PointCloudDataset.__init__(self, 'MyhalCollision')
 
         ##########################
         # Parameters for the files
         ##########################
 
         # Dataset folder
-        self.path = '../../Data/MyhalSim'
+        self.path = '../../../Data/MyhalSim'
 
         # Original data path
-        self.original_path = '../../Myhal_Simulation'
+        self.original_path = '../../../Myhal_Simulation'
 
         # Type of task conducted on this dataset
-        self.dataset_task = 'slam_segmentation'
+        self.dataset_task = 'collision_prediction'
 
         # Training or test set
-        self.set = set
+        self.set = chosen_set
 
         # Get a list of sequences
         if self.set == 'training':
-            self.sequences = day_list[:-1]
+            self.sequences = day_list
         elif self.set == 'validation':
-            self.sequences = day_list[-1:]
+            self.sequences = day_list
         elif self.set == 'test':
             self.sequences = day_list
         else:
-            raise ValueError('Unknown set for SemanticKitti data: ', self.set)
+            raise ValueError('Unknown set for MyhalCollision data: ', self.set)
 
         # List all files in each sequence
         self.frames = []
         for seq in self.sequences:
             if self.set == 'test':
-                velo_path = join(self.original_path, 'simulated_runs', seq,
-                                 'sim_frames')
+                velo_path = join(self.original_path, 'simulated_runs', seq, 'sim_frames')
             else:
-                velo_path = join(self.original_path, 'annotated_frames', seq)
-            frames = np.sort(
-                [vf[:-4] for vf in listdir(velo_path) if vf.endswith('.ply')])
+                velo_path = join(self.original_path, 'collisions', seq)
+            frames = np.array([vf[:-7] for vf in listdir(velo_path) if vf.endswith('_2D.ply')])
+            order = np.argsort([float(ff) for ff in frames])
+            frames = frames[order]
             self.frames.append(frames)
 
         ###########################
@@ -2485,13 +2481,14 @@ class MyhalSimDataset(PointCloudDataset):
         # Batch selection parameters
         ############################
 
+        # test
+
         # Initialize value for batch limit (max number of points per batch).
         self.batch_limit = torch.tensor([1], dtype=torch.float32)
         self.batch_limit.share_memory_()
 
         # Initialize frame potentials
-        self.potentials = torch.from_numpy(
-            np.random.rand(self.all_inds.shape[0]) * 0.1 + 0.1)
+        self.potentials = torch.from_numpy(np.random.rand(self.all_inds.shape[0]) * 0.1 + 0.1)
         self.potentials.share_memory_()
 
         # If true, the same amount of frames is picked per class
@@ -2508,7 +2505,7 @@ class MyhalSimDataset(PointCloudDataset):
             self.in_R = config.val_radius
 
         # shared epoch indices and classes (in case we want class balanced sampler)
-        if set == 'training':
+        if self.set == 'training':
             N = int(np.ceil(config.epoch_steps * self.batch_num * 1.1))
         else:
             N = int(np.ceil(config.validation_size * self.batch_num * 1.1))
@@ -2542,6 +2539,8 @@ class MyhalSimDataset(PointCloudDataset):
 
         # Initiate concatanation lists
         p_list = []
+        pl2D_list = []
+        img_list = []
         f_list = []
         l_list = []
         fi_list = []
@@ -2579,7 +2578,7 @@ class MyhalSimDataset(PointCloudDataset):
             # Initiate merged points
             merged_points = np.zeros((0, 3), dtype=np.float32)
             merged_labels = np.zeros((0, ), dtype=np.int32)
-            merged_coords = np.zeros((0, 4), dtype=np.float32)
+            merged_coords = np.zeros((0, self.config.n_frames + 1), dtype=np.float32)
 
             # In case of validation also keep original point and reproj indices
 
@@ -2587,6 +2586,7 @@ class MyhalSimDataset(PointCloudDataset):
             p_origin = np.zeros((1, 4))
             p_origin[0, 3] = 1
             pose0 = self.poses[s_ind][f_ind]
+            pose0_inv = np.linalg.inv(pose0)
             p0 = p_origin.dot(pose0.T)[:, :3]
             p0 = np.squeeze(p0)
             o_pts = None
@@ -2595,35 +2595,28 @@ class MyhalSimDataset(PointCloudDataset):
             t += [time.time()]
 
             num_merged = 0
-            f_inc = 0
-            while num_merged < self.config.n_frames and f_ind - f_inc >= 0:
+            while num_merged < self.config.n_frames and f_ind - num_merged >= 0:
 
                 # Current frame pose
-                pose = self.poses[s_ind][f_ind - f_inc]
-
-                # Select frame only if center has moved far away (more than X meter). Negative value to ignore
-                X = -1.0
-                if X > 0:
-                    diff = p_origin.dot(pose.T)[:, :3] - p_origin.dot(
-                        pose0.T)[:, :3]
-                    if num_merged > 0 and np.linalg.norm(
-                            diff) < num_merged * X:
-                        f_inc += 1
-                        continue
+                pose = self.poses[s_ind][f_ind - num_merged]
+                pose_inv = np.linalg.inv(pose)
 
                 # Path of points and labels
                 if self.set == 'test':
-                    seq_path = join(self.original_path, 'simulated_runs',
-                                    self.sequences[s_ind], 'sim_frames')
+                    seq_path = join(self.original_path, 'simulated_runs', self.sequences[s_ind], 'sim_frames')
                 else:
-                    seq_path = join(self.original_path, 'annotated_frames',
-                                    self.sequences[s_ind])
-                velo_file = join(seq_path,
-                                 self.frames[s_ind][f_ind - f_inc] + '.ply')
+                    seq_path = join(self.original_path, 'annotated_frames', self.sequences[s_ind])
+                velo_file = join(seq_path, self.frames[s_ind][f_ind - num_merged] + '.ply')
 
-                # Read points
+                # Read points (in original lidar coordinates)
                 data = read_ply(velo_file)
                 points = np.vstack((data['x'], data['y'], data['z'])).T
+
+                # Place in world coordinates (so that vertical projection works even in case of tilt)
+                hpoints = np.hstack((points, np.ones_like(points[:, :1])))
+                world_points = np.sum(np.expand_dims(hpoints, 2) * pose.T, axis=1)[:, :3]
+                #hpoints = np.hstack((world_points, np.ones_like(world_points[:, :1])))
+                #points0 = np.sum(np.expand_dims(hpoints, 2) * pose0_inv.T, axis=1)[:, :3]
 
                 if self.set == 'test':
                     # Fake labels
@@ -2633,60 +2626,47 @@ class MyhalSimDataset(PointCloudDataset):
                     # Read labels
                     sem_labels = data['classif']
 
-                # Apply inverse of pose to get original lidar measurements (without np.dot to avoid multi-threading)
-                hpoints = np.hstack((points, np.ones_like(points[:, :1])))
-                lidar_points = np.sum(np.expand_dims(hpoints, 2) * pose,
-                                      axis=1).astype(np.float32)
-
                 # In case of validation, keep the points in memory
-                if self.set in ['validation', 'test'] and f_inc == 0:
-                    o_pts = points[:, :3].astype(np.float32)
+                if self.set in ['validation', 'test'] and num_merged == 0:
+                    o_pts = world_points[:, :3].astype(np.float32)
                     o_labels = sem_labels.astype(np.int32)
 
-                # In case radius smaller than 50m, chose new center on a point of the wanted class or not
-                if self.in_R < 50.0 and f_inc == 0:
+                # In case radius smaller than 5m, chose new center on a point of the wanted class or not
+                if self.in_R < 5.0 and num_merged == 0:
                     if self.balance_classes:
-                        wanted_ind = np.random.choice(
-                            np.where(sem_labels == wanted_label)[0])
+                        wanted_ind = np.random.choice(np.where(sem_labels == wanted_label)[0])
                     else:
                         wanted_ind = np.random.choice(points.shape[0])
-                    p0 = points[wanted_ind, :3]
+                    p0 = world_points[wanted_ind, :3]
 
                 # Eliminate points further than config.in_radius
-                mask = np.sum(np.square(points[:, :3] - p0),
-                              axis=1) < self.in_R**2
+                mask = np.sum(np.square(world_points - p0), axis=1) < self.in_R**2
                 mask_inds = np.where(mask)[0].astype(np.int32)
 
                 # Shuffle points
                 rand_order = np.random.permutation(mask_inds)
-                points = points[rand_order, :3]
+                world_points = world_points[rand_order, :3]
                 sem_labels = sem_labels[rand_order]
 
-                # Place points in original frame reference to get coordinates
-                if f_inc == 0:
-                    new_coords = lidar_points[rand_order, :]
-                else:
-                    # We have to project in the first frame coordinates
-                    new_coords = points - pose0[:3, 3]
-                    # new_coords = new_coords.dot(pose0[:3, :3])
-                    new_coords = np.sum(np.expand_dims(new_coords, 2) *
-                                        pose0[:3, :3],
-                                        axis=1)
-                    new_coords = np.hstack(
-                        (new_coords, lidar_points[rand_order, 3:]))
+                # Stack features
+                features = np.zeros((world_points.shape[0], self.config.n_frames + 1), dtype=np.float32)
+                features[:, num_merged] = 1
+                features[:, -1] = num_merged
 
                 # Increment merge count
-                merged_points = np.vstack((merged_points, points))
+                merged_points = np.vstack((merged_points, world_points))
                 merged_labels = np.hstack((merged_labels, sem_labels))
-                merged_coords = np.vstack((merged_coords, new_coords))
+                merged_coords = np.vstack((merged_coords, features))
                 num_merged += 1
-                f_inc += 1
 
             t += [time.time()]
 
-            #########################
-            # Merge n_frames together
-            #########################
+            ###################
+            # Data Augmentation
+            ###################
+
+            # Then center on p0
+            merged_points_c = (merged_points - p0).astype(np.float32)
 
             # Too see yielding speed with debug timings method, collapse points (reduce mapping time to nearly 0)
             #merged_points = merged_points[:100, :]
@@ -2694,11 +2674,10 @@ class MyhalSimDataset(PointCloudDataset):
             #merged_points *= 0.1
 
             # Subsample merged frames
-            in_pts, in_fts, in_lbls = grid_subsampling(
-                merged_points,
-                features=merged_coords,
-                labels=merged_labels,
-                sampleDl=self.config.first_subsampling_dl)
+            in_pts, in_fts, in_lbls = grid_subsampling(merged_points_c,
+                                                       features=merged_coords,
+                                                       labels=merged_labels,
+                                                       sampleDl=self.config.first_subsampling_dl)
 
             t += [time.time()]
 
@@ -2725,14 +2704,15 @@ class MyhalSimDataset(PointCloudDataset):
             if self.set in ['validation', 'test']:
 
                 # get val_points that are in range
-                radiuses = np.sum(np.square(o_pts - p0), axis=1)
-                reproj_mask = radiuses < (0.99 * self.in_R)**2
+                o_pts_c = o_pts - p0
+                reproj_mask = np.sum(np.square(o_pts_c), axis=1) < (0.99 * self.in_R)**2
 
                 # Project predictions on the frame points
                 search_tree = KDTree(in_pts, leaf_size=50)
-                proj_inds = search_tree.query(o_pts[reproj_mask, :],
+                proj_inds = search_tree.query(o_pts_c[reproj_mask, :],
                                               return_distance=False)
                 proj_inds = np.squeeze(proj_inds).astype(np.int32)
+
             else:
                 proj_inds = np.zeros((0, ))
                 reproj_mask = np.zeros((0, ))
@@ -2744,12 +2724,205 @@ class MyhalSimDataset(PointCloudDataset):
 
             t += [time.time()]
 
-            # Color augmentation
-            if np.random.rand() > self.config.augment_color:
-                in_fts[:, 3:] *= 0
+
+            ##########################
+            # Compute 3D-2D projection
+            ##########################
+            # C++ wrappers to get the projections indexes (with shadow pools)
+            # Temporarily use the 3D neighbors wrappers
+
+            # Max number of points pooled to a grid cell
+            max_2D_pools = 20
+
+            # Project points on 2D plane
+            support_pts = np.copy(in_pts)
+            support_pts[:, 2] *= 0
+
+            # Create grid
+            grid_ticks = np.arange(-self.config.in_radius / np.sqrt(2),
+                                   self.config.in_radius / np.sqrt(2),
+                                   self.config.dl_2D)
+            xx, yy = np.meshgrid(grid_ticks, grid_ticks)
+            L_2D = xx.shape[0]
+            pool_points = np.vstack((np.ravel(xx), np.ravel(yy), np.ravel(yy) * 0)).astype(np.float32).T
+
+            # Get pooling indices
+            pool_inds = batch_neighbors(pool_points,
+                                        support_pts,
+                                        [pool_points.shape[0]],
+                                        [support_pts.shape[0]],
+                                        self.config.dl_2D/np.sqrt(2))
+
+            # Remove excedent => get to shape [L_2D*L_2D, max_2D_pools]
+            if pool_inds.shape[1] < max_2D_pools:
+                diff_d = max_2D_pools - pool_inds.shape[1]
+                pool_inds = np.pad(pool_inds,
+                                   ((0, 0), (0, diff_d)),
+                                   'constant',
+                                   constant_values=support_pts.shape[0])
+
+            else:
+                pool_inds = pool_inds[:, :max_2D_pools]
+
+            # Reshape into 2D grid
+            pools_2D = np.reshape(pool_inds, (L_2D, L_2D, max_2D_pools))
+
+
+            #########################
+            # Load groundtruth future
+            #########################
+
+            # Path of points and labels
+            if self.set == 'test':
+                future_imgs = np.zeros((0, 0, 0), dtype=np.float32)
+            else:
+
+                # Get groundtruth in 2D points format
+                seq_path = join(self.original_path, 'collisions', self.sequences[s_ind])
+                gt_file = join(seq_path, self.frames[s_ind][f_ind] + '_2D.ply')
+
+                # Read points
+                data = read_ply(gt_file)
+                pts_2D = np.vstack((data['x'], data['y'])).T
+                times_2D = data['t']
+                labels_2D = data['classif']
+
+                # Center on p0 and apply same augmentation
+                pts_2D = (pts_2D - p0[:2]).astype(np.float32)
+                pts_2D = np.hstack((pts_2D, np.zeros_like(pts_2D[:, :1])))
+                pts_2D = np.sum(np.expand_dims(pts_2D, 2) * R, axis=1) * scale
+
+                # For each time get the closest annotation
+                timestamps = np.linspace(0, self.config.T_2D, self.config.n_2D_layers + 1)
+                future_dt = (timestamps[1] - timestamps[0]) / 2
+                future_imgs = []
+                try:
+                    for future_t in timestamps:
+
+                        # Valid points for this timestamps are in the time range dt
+                        # TODO: Here different valid times for different classes
+                        valid_mask = np.abs(times_2D - future_t) < future_dt
+                        extension = 1
+                        while np.sum(valid_mask) < 1 and extension < 5:
+                            extension += 1
+                            valid_mask = np.abs(times_2D - future_t) < future_dt * extension
+
+                        valid_pts = pts_2D[valid_mask, :]
+                        valid_labels = labels_2D[valid_mask]
+                        valid_times = times_2D[valid_mask]
+
+                        # Get pooling indices to image
+                        pool2D_inds = batch_neighbors(pool_points,
+                                                      valid_pts,
+                                                      [pool_points.shape[0]],
+                                                      [valid_pts.shape[0]],
+                                                      self.config.dl_2D / np.sqrt(2))
+
+                        # Pool labels (shape = [L_2D*L_2D, max_neighb])
+                        valid_labels = np.hstack((valid_labels, np.ones_like(valid_labels[:1] * -1)))
+                        future_labels = valid_labels[pool2D_inds]
+                        future_2 = np.sum((future_labels == self.name_to_label['still']).astype(np.float32), axis=1)
+                        future_3 = np.sum((future_labels == self.name_to_label['longT']).astype(np.float32), axis=1)
+                        future_4 = np.sum((future_labels == self.name_to_label['shortT']).astype(np.float32), axis=1)
+
+                        # Reshape into 2D grid
+                        future_2 = np.reshape(future_2, (L_2D, L_2D))
+                        future_3 = np.reshape(future_3, (L_2D, L_2D))
+                        future_4 = np.reshape(future_4, (L_2D, L_2D))
+                        future_imgs.append(np.stack((future_2, future_3, future_4), axis=2))
+
+                except RuntimeError:
+                    # Temporary bug fix when no neighbors at all we just skip this one
+                    continue
+
+                # Stack future images
+                future_imgs = np.stack(future_imgs, 0)
+
+                # For permanent and long term objects, merge all futures
+                future_imgs[:, :, :, 0] = np.sum(future_imgs[:, :, :, 0], axis=0, keepdims=True) / (self.config.n_2D_layers + 1)
+                future_imgs[:, :, :, 1] = np.sum(future_imgs[:, :, :, 1], axis=0, keepdims=True) / (self.config.n_2D_layers + 1)
+
+                # Hardcoded value of 10 shortT points
+                future_imgs[:, :, :, 2] = np.clip(future_imgs[:, :, :, 2], 0, 10) / 10
+
+                # Normalize all class future
+                for i in range(future_imgs.shape[-1]):
+                    if np.max(future_imgs[:, :, :, i]) > 1.0:
+                        future_imgs[:, :, :, i] = future_imgs[:, :, :, i] / (np.max(future_imgs[:, :, :, i]) + 1e-9)
+
+                input_classes = np.sum(future_imgs[0, :, :, :], axis=(0, 1)) > 0
+
+                ###########################################################################################
+                #DEBUG
+                debug = self.config.input_threads == 0
+                if debug:
+                    print('Precesnce of each input class: ', input_classes)
+                    debug = debug and np.all(input_classes) and s_ind < 6
+                if debug:
+                    f1 = np.zeros_like(support_pts[:, 0])
+                    f1 = np.hstack((f1, np.zeros_like(f1[:1])))
+                    NN = 300
+                    rand_neighbs = np.random.choice(pool_inds.shape[0], size=NN)
+                    for rd_i in rand_neighbs:
+                        f1[pool_inds[rd_i]] = rd_i
+
+                    write_ply('results/t_supps.ply',
+                              [support_pts, f1[:-1], in_fts[:, -1], in_lbls],
+                              ['x', 'y', 'z', 'f1', 'f2', 'classif'])
+                    write_ply('results/t_supps3D.ply',
+                              [in_pts, f1[:-1], in_fts[:, -1], in_lbls],
+                              ['x', 'y', 'z', 'f1', 'f2', 'classif'])
+                    n_neighbs = np.sum((pool_inds < support_pts.shape[0]).astype(np.float32), axis=1)
+                    print(n_neighbs.shape)
+                    write_ply('results/t_pools.ply',
+                              [pool_points, n_neighbs],
+                              ['x', 'y', 'z', 'n_n'])
+
+                    import matplotlib.pyplot as plt
+                    from matplotlib.animation import FuncAnimation
+                    pp = []
+                    for i in range(self.config.n_2D_layers):
+                        pool_points[:, 2] = timestamps[i]
+                        pp.append(np.copy(pool_points))
+                    pp = np.concatenate(pp, axis=0)
+                    print(pp.shape, np.ravel(future_imgs[:, :, :, 2]).shape)
+                    write_ply('results/gt_pools.ply',
+                              [pp, np.ravel(future_imgs[:, :, :, 2])],
+                              ['x', 'y', 'z', 'f1'])
+                              
+                    print(pts_2D.shape, times_2D.shape, labels_2D.shape)
+                    write_ply('results/gt_pts.ply',
+                              [pts_2D[:, :2], times_2D, labels_2D],
+                              ['x', 'y', 't', 'f1'])
+
+                    # Function that saves future images as gif
+                    fig1, anim = save_future_anim('results/gt_anim.gif', future_imgs)
+                    fast_save_future_anim('results/gt_anim.gif', future_imgs, zoom=10)
+
+                    fig2, ax = plt.subplots()
+                    n_neighbs = np.sum((pools_2D < support_pts.shape[0]).astype(np.float32), axis=-1)
+                    n_neighbs = n_neighbs / max_2D_pools
+                    imgplot = plt.imshow(n_neighbs)
+                    plt.savefig('results/t_input_proj.png')
+                    plt.show()
+
+                    a = 1/0
+
+
+                ###########################################################################################
+
+                
+                # TODO: We should also predict ground and hidden space so that the network undestands why people disapear
+                #       Or instead of predicting it, we can just give it to the network when performing 2D projection
+                #       OR EVEN BETTER: ignore pixel from unknown space when performing loss????
+                
+
+
 
             # Stack batch
             p_list += [in_pts]
+            pl2D_list += [pools_2D.astype(np.int64)]
+            img_list += [future_imgs]
             f_list += [in_fts]
             l_list += [np.squeeze(in_lbls)]
             fi_list += [[s_ind, f_ind]]
@@ -2773,7 +2946,19 @@ class MyhalSimDataset(PointCloudDataset):
         # Concatenate batch
         ###################
 
+        # First adjust pools_2D for batch pooling
+        batch_N = np.sum([p.shape[0] for p in p_list])
+        batch_n = 0
+        for b_i, pl2D in enumerate(pl2D_list):
+            mask = pl2D == p_list[b_i].shape[0]
+            pl2D[mask] = batch_N
+            pl2D[np.logical_not(mask)] += batch_n
+            batch_n += p_list[b_i].shape[0]
+        stacked_pools_2D = np.stack(pl2D_list, axis=0)
+
+        # Concatenate the rest of the batch
         stacked_points = np.concatenate(p_list, axis=0)
+        stacked_imgs = np.stack(img_list, axis=0)
         features = np.concatenate(f_list, axis=0)
         labels = np.concatenate(l_list, axis=0)
         frame_inds = np.array(fi_list, dtype=np.int32)
@@ -2788,12 +2973,12 @@ class MyhalSimDataset(PointCloudDataset):
                                         dtype=np.float32)
         if self.config.in_features_dim == 1:
             pass
-        elif self.config.in_features_dim == 2:
-            # Use original height coordinate
-            stacked_features = np.hstack((stacked_features, features[:, 2:3]))
+        elif self.config.in_features_dim == 3:
+            # Use only the three frame indicators
+            stacked_features = features[:, :3]
         elif self.config.in_features_dim == 4:
-            # Use all coordinates
-            stacked_features = np.hstack((stacked_features, features[:3]))
+            # Use the ones + the three frame indicators
+            stacked_features = np.hstack((stacked_features, features[:, :3]))
         else:
             raise ValueError(
                 'Only accepted input dimensions are 1, 2 and 4 (without and with XYZ)'
@@ -2814,11 +2999,9 @@ class MyhalSimDataset(PointCloudDataset):
         t += [time.time()]
 
         # Add scale and rotation for testing
+        input_list += [stacked_imgs, stacked_pools_2D]
         input_list += [stacked_features, labels.astype(np.int64)]
-        input_list += [
-            scales, rots, frame_inds, frame_centers, r_inds_list, r_mask_list,
-            val_labels_list
-        ]
+        input_list += [scales, rots, frame_inds, frame_centers, r_inds_list, r_mask_list, val_labels_list]
 
         t += [time.time()]
 
@@ -2954,7 +3137,7 @@ class MyhalSimDataset(PointCloudDataset):
 
         if self.set in ['training', 'validation']:
 
-            for seq in self.sequences:
+            for s_ind, seq in enumerate(self.sequences):
 
                 if not exists(join(self.path, seq)):
                     makedirs(join(self.path, seq))
@@ -2964,8 +3147,14 @@ class MyhalSimDataset(PointCloudDataset):
                 with open(in_file, 'rb') as f:
                     transform_list = pickle.load(f)
 
-                # Read poses
-                self.poses.append(transform_list)
+                # Remove poses of ignored frames
+                annot_path = join(self.original_path, 'annotated_frames', seq)
+                annot_frames = np.array([vf[:-4] for vf in listdir(annot_path) if vf.endswith('.ply')])
+                order = np.argsort([float(a_f) for a_f in annot_frames])
+                annot_frames = annot_frames[order]
+                pose_dict = {k: v for k, v in zip(annot_frames, transform_list)}
+                self.poses.append([pose_dict[f] for f in self.frames[s_ind]])
+
 
         else:
 
@@ -2979,12 +3168,8 @@ class MyhalSimDataset(PointCloudDataset):
         # Prepare the indices of all frames
         ###################################
 
-        seq_inds = np.hstack([
-            np.ones(len(_), dtype=np.int32) * i
-            for i, _ in enumerate(self.frames)
-        ])
-        frame_inds = np.hstack(
-            [np.arange(len(_), dtype=np.int32) for _ in self.frames])
+        seq_inds = np.hstack([np.ones(len(_), dtype=np.int32) * i for i, _ in enumerate(self.frames)])
+        frame_inds = np.hstack([np.arange(len(_), dtype=np.int32) for _ in self.frames])
         self.all_inds = np.vstack((seq_inds, frame_inds)).T
 
         ################################################
@@ -3076,11 +3261,13 @@ class MyhalSimDataset(PointCloudDataset):
             self.val_points = []
             self.val_labels = []
             self.val_confs = []
+            self.val_2D_reconstruct = []
+            self.val_2D_future = []
 
             for s_ind, seq_frames in enumerate(self.frames):
-                self.val_confs.append(
-                    np.zeros(
-                        (len(seq_frames), self.num_classes, self.num_classes)))
+                self.val_confs.append(np.zeros((len(seq_frames), self.num_classes, self.num_classes)))
+                self.val_2D_reconstruct.append(np.ones((len(seq_frames), 3)))
+                self.val_2D_future.append(np.ones((len(seq_frames), self.config.n_2D_layers, 3)))
 
         return
 
@@ -3101,10 +3288,10 @@ class MyhalSimDataset(PointCloudDataset):
         return np.vstack((data['x'], data['y'], data['z'])).T
 
 
-class MyhalSimSampler(Sampler):
-    """Sampler for MyhalSim"""
+class MyhalCollisionSampler(Sampler):
+    """Sampler for MyhalCollision"""
 
-    def __init__(self, dataset: MyhalSimDataset):
+    def __init__(self, dataset: MyhalCollisionDataset):
         Sampler.__init__(self, dataset)
 
         # Dataset used by the sampler (no copy is made in memory)
@@ -3648,8 +3835,8 @@ class MyhalSimSampler(Sampler):
         return
 
 
-class MyhalSimCustomBatch:
-    """Custom batch definition with memory pinning for MyhalSim"""
+class MyhalCollisionCustomBatch:
+    """Custom batch definition with memory pinning for MyhalCollision"""
 
     def __init__(self, input_list):
 
@@ -3661,26 +3848,20 @@ class MyhalSimCustomBatch:
 
         # Extract input tensors from the list of numpy array
         ind = 1
-        self.points = [
-            torch.from_numpy(nparray) for nparray in input_list[ind:ind + L]
-        ]
+        self.points = [torch.from_numpy(nparray) for nparray in input_list[ind:ind + L]]
         ind += L
-        self.neighbors = [
-            torch.from_numpy(nparray) for nparray in input_list[ind:ind + L]
-        ]
+        self.neighbors = [torch.from_numpy(nparray) for nparray in input_list[ind:ind + L]]
         ind += L
-        self.pools = [
-            torch.from_numpy(nparray) for nparray in input_list[ind:ind + L]
-        ]
+        self.pools = [torch.from_numpy(nparray) for nparray in input_list[ind:ind + L]]
         ind += L
-        self.upsamples = [
-            torch.from_numpy(nparray) for nparray in input_list[ind:ind + L]
-        ]
+        self.upsamples = [torch.from_numpy(nparray) for nparray in input_list[ind:ind + L]]
         ind += L
-        self.lengths = [
-            torch.from_numpy(nparray) for nparray in input_list[ind:ind + L]
-        ]
+        self.lengths = [torch.from_numpy(nparray) for nparray in input_list[ind:ind + L]]
         ind += L
+        self.future_2D = torch.from_numpy(input_list[ind])
+        ind += 1
+        self.pools_2D = torch.from_numpy(input_list[ind])
+        ind += 1
         self.features = torch.from_numpy(input_list[ind])
         ind += 1
         self.labels = torch.from_numpy(input_list[ind])
@@ -3715,6 +3896,8 @@ class MyhalSimCustomBatch:
             in_tensor.pin_memory() for in_tensor in self.upsamples
         ]
         self.lengths = [in_tensor.pin_memory() for in_tensor in self.lengths]
+        self.future_2D = self.future_2D.pin_memory()
+        self.pools_2D = self.pools_2D.pin_memory()
         self.features = self.features.pin_memory()
         self.labels = self.labels.pin_memory()
         self.scales = self.scales.pin_memory()
@@ -3731,6 +3914,8 @@ class MyhalSimCustomBatch:
         self.pools = [in_tensor.to(device) for in_tensor in self.pools]
         self.upsamples = [in_tensor.to(device) for in_tensor in self.upsamples]
         self.lengths = [in_tensor.to(device) for in_tensor in self.lengths]
+        self.future_2D = self.future_2D.to(device)
+        self.pools_2D = self.pools_2D.to(device)
         self.features = self.features.to(device)
         self.labels = self.labels.to(device)
         self.scales = self.scales.to(device)
@@ -3804,5 +3989,5 @@ class MyhalSimCustomBatch:
         return all_p_list
 
 
-def MyhalSimCollate(batch_data):
-    return MyhalSimCustomBatch(batch_data)
+def MyhalCollisionCollate(batch_data):
+    return MyhalCollisionCustomBatch(batch_data)
