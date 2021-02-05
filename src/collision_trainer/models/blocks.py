@@ -1690,7 +1690,7 @@ class ResNet2DLayer(nn.Module):
 
 class Initial2DBlock(nn.Module):
 
-    def __init__(self, in_dim, out_dim, levels=3):
+    def __init__(self, in_dim, out_dim, levels=3, resnet_per_level=3):
         super(Initial2DBlock, self).__init__()
 
         # Get other parameters
@@ -1701,9 +1701,9 @@ class Initial2DBlock(nn.Module):
         # Define encoder
         self.resnet_layers = nn.ModuleList()
         current_dim = out_dim
-        self.resnet_layers.append(ResNet2DLayer(in_dim, current_dim, downsampling=False, n=3))
+        self.resnet_layers.append(ResNet2DLayer(in_dim, current_dim, downsampling=False, n=resnet_per_level))
         for _ in range(levels - 1):
-            self.resnet_layers.append(ResNet2DLayer(current_dim, current_dim*2, downsampling=True, n=3))
+            self.resnet_layers.append(ResNet2DLayer(current_dim, current_dim*2, downsampling=True, n=resnet_per_level))
             current_dim *= 2
 
         # Define decoder
@@ -1739,7 +1739,7 @@ class Initial2DBlock(nn.Module):
 class Propagation2DBlock(nn.Module):
 
 
-    def __init__(self, in_dim, out_dim, stride=1):
+    def __init__(self, in_dim, out_dim, stride=1, n_blocks=2):
         """
         Initialize a resnet bottleneck block.
         :param in_dim: dimension input features
@@ -1756,7 +1756,7 @@ class Propagation2DBlock(nn.Module):
         # Perform a few resnet convolution
         self.resnet_convs = nn.ModuleList()
         self.resnet_convs.append(Resnet2DBlock(in_dim, out_dim))
-        for i in range(1):
+        for i in range(n_blocks - 1):
             self.resnet_convs.append(Resnet2DBlock(out_dim, out_dim))
 
         return

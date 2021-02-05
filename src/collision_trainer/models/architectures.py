@@ -1160,14 +1160,14 @@ class KPCollider(nn.Module):
         self.projector = ProjectorBlock(config.detach_2D, pooling='max')
 
         # First conv out ou projection to propagate feature a first time
-        self.initial_net = Initial2DBlock(out_dim, config.first_features_dim)
+        self.initial_net = Initial2DBlock(out_dim, config.first_features_dim, levels=config.init_2D_levels, resnet_per_level=config.init_2D_resnets)
         self.init_softmax_2D = nn.Conv2d(config.first_features_dim, 3, kernel_size=1, bias=True)
         self.merge_softmax_2D = nn.Conv2d(config.first_features_dim, 3, kernel_size=1, bias=True)
 
         self.shared_2D = config.shared_2D
         if self.shared_2D:
             # Use a mini network for propagation, which is repeated at every step
-            self.prop_net = Propagation2DBlock(config.first_features_dim, config.first_features_dim)
+            self.prop_net = Propagation2DBlock(config.first_features_dim, config.first_features_dim, n_blocks=config.prop_2D_resnets)
 
             # Shared head softmax
             self.head_softmax_2D = nn.Conv2d(config.first_features_dim, 3, kernel_size=1, bias=True)
@@ -1176,7 +1176,7 @@ class KPCollider(nn.Module):
             self.prop_net = nn.ModuleList()
             self.head_softmax_2D = nn.ModuleList()
             for i in range(config.n_2D_layers):
-                self.prop_net.append(Propagation2DBlock(config.first_features_dim, config.first_features_dim))
+                self.prop_net.append(Propagation2DBlock(config.first_features_dim, config.first_features_dim, n_blocks=config.prop_2D_resnets))
                 self.head_softmax_2D.append(nn.Conv2d(config.first_features_dim, 3, kernel_size=1, bias=True))
 
 
@@ -1212,7 +1212,7 @@ class KPCollider(nn.Module):
         self.power_2D_init_loss = config.power_2D_init_loss
         self.power_2D_prop_loss = config.power_2D_prop_loss
         self.neg_pos_ratio = config.neg_pos_ratio
-        self.train_3D = config.train_3D
+        self.apply_3D_loss = config.apply_3D_loss
         
         self.fixed_conv = torch.nn.Conv2d(config.n_2D_layers, config.n_2D_layers, 3, stride=1, padding=1, bias=False)
         self.fixed_conv.weight.requires_grad = False
@@ -1220,20 +1220,12 @@ class KPCollider(nn.Module):
         for i in range(config.n_2D_layers):
             self.fixed_conv.weight[i, i] += 10000.0
 
+        self.train_only_3D = config.pretrained_3D == 'todo'
+
         return
 
-    def forward(self, batch, config, save_block_features=False):
 
-        # Init intermediate features container
-        self.intermediate_features = []
-
-        # Get input features
-        x = batch.features.clone().detach()
-
-        if np.any(['equivariant' in layer_name for layer_name in config.architecture]):
-            lrf = batch.lrf.clone().detach()
-        else:
-            lrf = None
+    def backend_3D_forward(self, x, batch, lrf=None, save_block_features=False):
 
         #################
         # Encoder network
@@ -1272,57 +1264,78 @@ class KPCollider(nn.Module):
             # Optionally save features
             if save_block_features:
                 self.intermediate_features.append(x)
-                
+
+        return x
+
+
+    def forward(self, batch, config, save_block_features=False):
+
+        # Init intermediate features container
+        self.intermediate_features = []
+
+        # Get input features
+        x = batch.features.clone().detach()
+
+        if np.any(['equivariant' in layer_name for layer_name in config.architecture]):
+            lrf = batch.lrf.clone().detach()
+        else:
+            lrf = None
+            
+        ############
+        # 3D Network
+        ############
+
+        if 'encoder_blocks' in config.frozen_layers and 'decoder_blocks' in config.frozen_layers:
+            with torch.no_grad():
+                x = self.backend_3D_forward(x, batch, lrf, save_block_features)
+        else:
+            x = self.backend_3D_forward(x, batch, lrf, save_block_features)
+  
         ############
         # 2D Network
         ############
 
-        # Project feature from [N, D_0] to [B, D_0, L, L]
-        x_2D = self.projector(x, batch)
+        if self.train_only_3D:
+            B = int(batch.future_2D.shape[0])
+            preds_2D = torch.zeros((B, 3, 32, 1, 1))
 
-        # Initial net
-        x_2D = self.initial_net(x_2D)
-        
-        # Initial preds
-        preds_2D = [self.init_softmax_2D(x_2D), self.merge_softmax_2D(x_2D)]
-
-        # Append propagated preds
-        if self.shared_2D:
-            for i in range(config.n_2D_layers):
-                x_2D = self.prop_net(x_2D)
-                preds_2D.append(self.head_softmax_2D(x_2D))
         else:
-            for i in range(config.n_2D_layers):
-                x_2D = self.prop_net[i](x_2D)
-                preds_2D.append(self.head_softmax_2D[i](x_2D))
 
-        # Stack 2d outputs should have the shape: [B, 3, T_2D+2, L_2D, L_2D]
-        preds_2D = torch.stack(preds_2D, axis=2)
+            # Project feature from 3D to 2D image: [N, D_0] to [B, D_0, L, L]
+            x_2D = self.projector(x, batch)
+
+            # Initial net
+            x_2D = self.initial_net(x_2D)
+            
+            # Initial preds
+            preds_2D = [self.init_softmax_2D(x_2D), self.merge_softmax_2D(x_2D)]
+
+            # Append propagated preds
+            if self.shared_2D:
+                for i in range(config.n_2D_layers):
+                    x_2D = self.prop_net(x_2D)
+                    preds_2D.append(self.head_softmax_2D(x_2D))
+            else:
+                for i in range(config.n_2D_layers):
+                    x_2D = self.prop_net[i](x_2D)
+                    preds_2D.append(self.head_softmax_2D[i](x_2D))
+
+            # Stack 2d outputs should have the shape: [B, 3, T_2D+2, L_2D, L_2D]
+            preds_2D = torch.stack(preds_2D, axis=2)
 
         ##############
         # Head Network
         ##############
-            
-        # Head of network
-        x = self.head_mlp(x, batch)
-        x = self.head_softmax(x, batch)
 
-        # Special case of multi-head
-        if self.num_parts is not None:
+        if 'head_mlp' in config.frozen_layers and 'head_softmax' in config.frozen_layers:
+            with torch.no_grad():
+                x = self.head_mlp(x, batch)
+                preds_3D = self.head_softmax(x, batch)
+        else:
+            x = self.head_mlp(x, batch)
+            preds_3D = self.head_softmax(x, batch)
 
-            # Reshape to get each part outputs
-            maxC = np.max(self.num_parts)
-            x = x.reshape((-1, len(self.num_parts), maxC))
-
-            # Collect the right logits for the object label
-            new_x = []
-            i0 = 0
-            for b_i, length in enumerate(batch.lengths[0]):
-                new_x.append(x[i0:i0 + length, batch.obj_labels[b_i], :])
-                i0 += length
-            x = torch.cat(new_x, dim=0)
-
-        return x, preds_2D.permute(0, 2, 3, 4, 1)
+        return preds_3D, preds_2D.permute(0, 2, 3, 4, 1)
 
     def loss(self, outputs, batch):
         """
@@ -1351,7 +1364,7 @@ class KPCollider(nn.Module):
         target = target.squeeze().unsqueeze(0)
 
         # Cross entropy loss
-        if self.train_3D:
+        if self.apply_3D_loss:
             self.output_3D_loss = self.criterion(outputs_3D, target)
         else:
             self.output_3D_loss = 0
@@ -1361,39 +1374,45 @@ class KPCollider(nn.Module):
         # 2D Loss
         #########
 
-        # Binary cross entropy loss for multilable classification (because the labels are not mutually exclusive)
-        # Only apply loss to part of the empyty space to reduce unbalanced classes
-
-        # Init loss for initial class probablitities => shapes = [B, 1, L_2D, L_2D, 3]
-        init_2D_loss = self.power_2D_init_loss * self.criterion_2D(outputs_2D[:, 0, :, :, :], batch.future_2D[:, 0, :, :, :])
-
-        # Init loss for merged future class probablitities => shapes = [B, 1, L_2D, L_2D, 3]
-        merged_future = batch.future_2D[:, 0, :, :, :].detach().clone()
-        max_v, _ = torch.max(batch.future_2D[:, 1:, :, :, 2], dim=1)
-        merged_future[:, :, :, 2] = max_v
-        init_2D_loss += self.power_2D_init_loss * self.criterion_2D(outputs_2D[:, 1, :, :, :], merged_future)
+        if self.train_only_3D:
+            self.output_2D_loss = 0
         
+        else:
 
-        # Propagation loss applied to each prop layer => shapes = [B, T_2D, L_2D, L_2D, 3]
-        # Only use the positive pixels and approx 2 times more negative pixels (picked randomly)
-        future_gt = batch.future_2D[:, 1:, :, :, 2]
-        ratio_pos = float(torch.sum((future_gt > 0.01).to(torch.float32)) / float(torch.numel(future_gt)))
+            # Binary cross entropy loss for multilable classification (because the labels are not mutually exclusive)
+            # Only apply loss to part of the empyty space to reduce unbalanced classes
 
-        # use a fixed conv2d to dilate positive inds
-        with torch.no_grad():
-            dilated_gt = self.fixed_conv(future_gt)
-        dilated_inds = dilated_gt > 0.01
+            # Init loss for initial class probablitities => shapes = [B, 1, L_2D, L_2D, 3]
+            init_2D_loss = self.power_2D_init_loss * self.criterion_2D(outputs_2D[:, 0, :, :, :], batch.future_2D[:, 0, :, :, :])
 
-        # Add some random negative inds
-        future_p = outputs_2D[:, 2:, :, :, 2]
-        loss_mask = torch.rand_like(future_p)
-        loss_mask[dilated_inds] = 1.0
-        threshold = min(1.0 - ratio_pos * self.neg_pos_ratio, 0.9)
-        loss_mask = loss_mask > threshold
-        prop_2D_loss = self.power_2D_prop_loss * self.criterion_2D(future_p[loss_mask], future_gt[loss_mask])
+            # Init loss for merged future class probablitities => shapes = [B, 1, L_2D, L_2D, 3]
+            merged_future = batch.future_2D[:, 0, :, :, :].detach().clone()
+            max_v, _ = torch.max(batch.future_2D[:, 1:, :, :, 2], dim=1)
+            merged_future[:, :, :, 2] = max_v
+            init_2D_loss += self.power_2D_init_loss * self.criterion_2D(outputs_2D[:, 1, :, :, :], merged_future)
+            
 
-        # Sum the two 2D losses
-        self.output_2D_loss = init_2D_loss + prop_2D_loss
+            # Propagation loss applied to each prop layer => shapes = [B, T_2D, L_2D, L_2D, 3]
+            # Only use the positive pixels and approx 2 times more negative pixels (picked randomly)
+            future_gt = batch.future_2D[:, 1:, :, :, 2]
+            ratio_pos = float(torch.sum((future_gt > 0.01).to(torch.float32)) / float(torch.numel(future_gt)))
+
+            # use a fixed conv2d to dilate positive inds
+            with torch.no_grad():
+                dilated_gt = self.fixed_conv(future_gt)
+            dilated_inds = dilated_gt > 0.01
+
+            # Add some random negative inds
+            future_p = outputs_2D[:, 2:, :, :, 2]
+            loss_mask = torch.rand_like(future_p)
+            loss_mask[dilated_inds] = 1.0
+            threshold = min(1.0 - ratio_pos * self.neg_pos_ratio, 0.9)
+            loss_mask = loss_mask > threshold
+            prop_2D_loss = self.power_2D_prop_loss * self.criterion_2D(future_p[loss_mask], future_gt[loss_mask])
+
+            # Sum the two 2D losses
+            self.output_2D_loss = init_2D_loss + prop_2D_loss
+
 
         ######
         # Regu

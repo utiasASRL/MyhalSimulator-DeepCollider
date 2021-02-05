@@ -100,30 +100,36 @@ class MyhalCollisionConfig(Config):
     ######################
 
     # Number of propagating layer
-    n_2D_layers = 30
+    n_2D_layers = 10
 
     # Total time propagated
-    T_2D = 3.0
+    T_2D = 2.0
 
     # Size of 2D convolution grid
-    dl_2D = 0.1
+    dl_2D = 0.15
 
-    # Power of the loss for the 2d predictions
+    # Power of the loss for the 2d predictions (use smaller prop loss when shared weights)
     power_2D_init_loss = 1.0
-    power_2D_prop_loss = 5.0
+    power_2D_prop_loss = 0.5
     neg_pos_ratio = 3.0
 
+    # Specification of the 2D networks composition
+    init_2D_levels = 3
+    init_2D_resnets = 2
+    prop_2D_resnets = 2
+
+    # Path to a pretrained 3D network. if empty, ignore, if 'todo', then only train 3D part of the network.
+    pretrained_3D = 'Log_2021-01-27_18-53-05'
+
     # Detach the 2D network from the 3D network when backpropagating gradient
-    detach_2D = False
+    detach_2D = True
 
     # Share weights for 2D network TODO: see if not sharing makes a difference
     shared_2D = True
 
     # Trainable backend 3D network
-    train_3D = True
-    #frozen_layers = ['encoder_blocks', 'decoder_blocks', 'head_mlp', 'head_softmax']
-    frozen_layers = []
-
+    apply_3D_loss = False
+    frozen_layers = ['encoder_blocks', 'decoder_blocks', 'head_mlp', 'head_softmax']
 
     ###################
     # KPConv parameters
@@ -190,7 +196,7 @@ class MyhalCollisionConfig(Config):
     # Learning rate management
     learning_rate = 1e-2
     momentum = 0.98
-    lr_decays = {i: 0.1 ** (1 / 150) for i in range(1, max_epoch)}
+    lr_decays = {i: 0.1 ** (1 / 80) for i in range(1, max_epoch)}
     grad_clip_norm = 100.0
 
     # Number of steps per epochs
@@ -230,6 +236,16 @@ if __name__ == '__main__':
     #           > Use the polar coordinates to get neighbors???? (avoiding tree building time)
     #           > cpp extension for conversion into a 2D lidar_range_scan
     #
+
+    ############################
+    # Initialize the environment
+    ############################
+
+    # Set which gpu is going to be used
+    GPU_ID = '0'
+
+    # Set GPU visible device
+    os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
 
     ###################
     # Training sessions
@@ -306,46 +322,6 @@ if __name__ == '__main__':
 
         a = 1 / 0
 
-    ############################
-    # Initialize the environment
-    ############################
-
-    # Set which gpu is going to be used
-    GPU_ID = '3'
-
-    # Set GPU visible device
-    os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
-
-    ###############
-    # Previous chkp
-    ###############
-
-    # Choose here if you want to start training from a previous snapshot (None for new training)
-    previous_training_path = ''
-    # previous_training_path = 'Log_2020-10-16_23-40-33'
-    # TODO: Retrain network with current parameters (subsamplinf in_radius)
-    #       Load weight better
-
-    # Choose index of checkpoint to start from. If None, uses the latest chkp
-    chkp_idx = 0
-
-    # Load previous weights
-    if previous_training_path:
-
-        # Find all snapshot in the chosen training folder
-        chkp_path = os.path.join('results', previous_training_path, 'checkpoints')
-        chkps = [f for f in os.listdir(chkp_path) if f[:4] == 'chkp']
-
-        # Find which snapshot to restore
-        if chkp_idx is None:
-            chosen_chkp = 'current_chkp.tar'
-        else:
-            chosen_chkp = np.sort(chkps)[chkp_idx]
-        chosen_chkp = os.path.join('results', previous_training_path, 'checkpoints', chosen_chkp)
-
-    else:
-        chosen_chkp = None
-
     ##############
     # Prepare Data
     ##############
@@ -356,13 +332,84 @@ if __name__ == '__main__':
 
     # Initialize configuration class
     config = MyhalCollisionConfig()
-    if previous_training_path:
-        config.load(os.path.join('results', previous_training_path))
-        config.saving_path = None
+  
+    # Override with configuration from previous 3D network if given
+    if config.pretrained_3D and config.pretrained_3D != 'todo':
+
+        # Check if path exists
+        previous_path = os.path.join('results', config.pretrained_3D)
+        if not exists(previous_path):
+            raise ValueError('Given path for previous 3D network does not exist')
+        
+        # Load config
+        prev_config = MyhalCollisionConfig()
+        prev_config.load(previous_path)
+
+        # List of params we should not overwrite:
+        kept_params = ['n_2D_layers',
+                       'T_2D',
+                       'dl_2D',
+                       'power_2D_init_loss',
+                       'power_2D_prop_loss',
+                       'neg_pos_ratio',
+                       'init_2D_levels',
+                       'init_2D_resnets',
+                       'prop_2D_resnets',
+                       'pretrained_3D',
+                       'detach_2D',
+                       'shared_2D',
+                       'apply_3D_loss',
+                       'frozen_layers',
+                       'max_epoch',
+                       'learning_rate',
+                       'momentum',
+                       'lr_decays',
+                       'grad_clip_norm',
+                       'epoch_steps',
+                       'validation_size',
+                       'checkpoint_gap',
+                       'saving',
+                       'saving_path',
+                       'input_threads']
+        
+        for attr_name, attr_value in vars(config).items():
+            if attr_name not in kept_params:
+                setattr(config, attr_name, getattr(prev_config, attr_name))
+
 
     # Get path from argument if given
     if len(sys.argv) > 1:
         config.saving_path = sys.argv[1]
+
+    ###############
+    # Previous chkp
+    ###############
+    # Choose here if you want to start training from a previous snapshot (None for new training)
+
+    # Choose index of checkpoint to start from. If None, uses the latest chkp
+    chkp_idx = None
+
+    chosen_chkp = None
+    if config.pretrained_3D and config.pretrained_3D != 'todo':
+
+        # Check if path exists
+        chkp_path = os.path.join('results', config.pretrained_3D, 'checkpoints')
+        if not exists(chkp_path):
+            raise ValueError('Given path for previous 3D network does contain any checkpoints')
+
+        # Find all snapshot in the chosen training folder
+        chkps = [f for f in os.listdir(chkp_path) if f[:4] == 'chkp']
+
+        # Find which snapshot to restore
+        if chkp_idx is None:
+            chosen_chkp = 'current_chkp.tar'
+        else:
+            chosen_chkp = np.sort(chkps)[chkp_idx]
+        chosen_chkp = os.path.join('results', config.pretrained_3D, 'checkpoints', chosen_chkp)
+
+    #####################
+    # Init input pipeline
+    #####################
 
     # Initialize datasets (dummy validation)
     training_dataset = MyhalCollisionDataset(config, train_days[train_inds], chosen_set='training', balance_classes=True)

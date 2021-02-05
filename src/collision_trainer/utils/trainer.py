@@ -58,7 +58,7 @@ class ModelTrainer:
     # Initialization methods
     # ------------------------------------------------------------------------------------------------------------------
 
-    def __init__(self, net, config, chkp_path=None, finetune=False, on_gpu=True):
+    def __init__(self, net, config, chkp_path=None, finetune=True, on_gpu=True):
         """
         Initialize training parameters and reload previous model for restore/finetune
         :param net: network object
@@ -99,17 +99,43 @@ class ModelTrainer:
 
         if (chkp_path is not None):
             if finetune:
+
+                print("\nLoading pretrained weights:")
+
+                # Load checkpoint
                 checkpoint = torch.load(chkp_path)
-                net.load_state_dict(checkpoint['model_state_dict'])
-                net.train()
-                print("Model restored and ready for finetuning.")
+                print('All network layers:', np.unique([k.split('.')[0] for k, v in checkpoint['model_state_dict'].items()]))
+
+                # Get dictionary of weights that we need
+                needed_layers = ['encoder_blocks', 'decoder_blocks', 'head_mlp', 'head_softmax']
+                pretrained_dict = {k: v for k, v in checkpoint['model_state_dict'].items()
+                                   if k.split('.')[0] in needed_layers}
+                print('Loaded layer weights:', np.unique([k.split('.')[0] for k, v in pretrained_dict.items()]))
+
+                # Load these weight in the current network
+                missing_keys, unexpected_keys = net.load_state_dict(pretrained_dict, strict=False)
+                print('Untouched layer weights:', np.unique([k.split('.')[0] for k in missing_keys]))
+                if unexpected_keys:
+                    print('Unexpected layer weights:', np.unique([k.split('.')[0] for k in unexpected_keys]))
+                    raise ValueError('Unexpected layer weights in the pretrained network.')
+
+                # Setup the trainable weights and frozen weights
+                if config.frozen_layers:
+                    for name, child in net.named_children():
+                        if name not in config.frozen_layers:
+                            child.train()
+                else:
+                    net.train()
+                print("Model restored and ready for finetuning.\n")
+
             else:
                 checkpoint = torch.load(chkp_path)
                 net.load_state_dict(checkpoint['model_state_dict'])
                 self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
                 self.epoch = checkpoint['epoch']
                 net.train()
-                print("Model and training state restored.")
+                print("Model and training state restored.\n")
+
 
         # Path of the result folder
         if config.saving:

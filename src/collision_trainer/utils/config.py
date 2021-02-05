@@ -35,6 +35,42 @@ class Config:
     """
     Class containing the parameters you want to modify for this dataset
     """
+    
+    ######################
+    # Collision parameters
+    ######################
+
+    # Number of propagating layer
+    n_2D_layers = 30
+
+    # Total time propagated
+    T_2D = 3.0
+
+    # Size of 2D convolution grid
+    dl_2D = 0.1
+
+    # Power of the loss for the 2d predictions (use smaller prop loss when shared weights)
+    power_2D_init_loss = 1.0
+    power_2D_prop_loss = 0.5
+    neg_pos_ratio = 3.0
+    
+    # Specification of the 2D networks composition
+    init_2D_levels = 3
+    init_2D_resnets = 2
+    prop_2D_resnets = 2
+
+    # Path to a pretrained 3D network. if empty, ignore, if 'todo', then only train 3D part of the network.
+    pretrained_3D = ''
+
+    # Detach the 2D network from the 3D network when backpropagating gradient
+    detach_2D = False
+
+    # Share weights for 2D network TODO: see if not sharing makes a difference
+    shared_2D = False
+
+    # Trainable backend 3D network
+    apply_3D_loss = True
+    frozen_layers = []
 
     ##################
     # Input parameters
@@ -256,7 +292,7 @@ class Config:
                 elif line_info[0] == 'lr_decay_epochs':
                     self.lr_decays = {int(b.split(':')[0]): float(b.split(':')[1]) for b in line_info[2:]}
 
-                elif line_info[0] == 'architecture':
+                elif line_info[0] in ['architecture', 'frozen_layers']:
                     self.architecture = [b for b in line_info[2:]]
 
                 elif line_info[0] == 'augment_symmetries':
@@ -290,9 +326,50 @@ class Config:
             text_file.write('# Parameters of the training session #\n')
             text_file.write('# -----------------------------------#\n\n')
 
+            # Collision parameters
+            text_file.write('# Collision parameters\n')
+            text_file.write('# ********************\n\n')
+
+            parameters_list = ['n_2D_layers',
+                               'T_2D',
+                               'dl_2D',
+                               'power_2D_init_loss',
+                               'power_2D_prop_loss',
+                               'neg_pos_ratio',
+                               'pretrained_3D',
+                               'detach_2D',
+                               'shared_2D',
+                               'apply_3D_loss',
+                               'init_2D_levels',
+                               'init_2D_resnets',
+                               'prop_2D_resnets',
+                               'frozen_layers']
+
+            for param in parameters_list:
+                if hasattr(self, param):
+                    attr_value = getattr(self, param)
+                    if type(attr_value) != list:
+                        attr_value = [attr_value]
+                    text_file.write('{:s} ='.format(param))
+                    for list_elem in attr_value:
+                        list_type = type(list_elem)
+                        if list_type == str:
+                            text_file.write(' {:s}'.format(list_elem))
+                        elif list_type == int:
+                            text_file.write(' {:d}'.format(list_elem))
+                        elif list_type == bool:
+                            text_file.write(' {:d}'.format(int(list_elem)))
+                        elif list_type == float:
+                            text_file.write(' {:.6f}'.format(list_elem))
+                        else:
+                            raise ValueError('Unsupported type', list_type, 'for attribute', param)
+                    text_file.write('\n')
+            
             # Input parameters
+            text_file.write('\n')
             text_file.write('# Input parameters\n')
             text_file.write('# ****************\n\n')
+
             text_file.write('dataset = {:s}\n'.format(self.dataset))
             text_file.write('dataset_task = {:s}\n'.format(self.dataset_task))
             if type(self.num_classes) is list:
@@ -305,9 +382,10 @@ class Config:
             text_file.write('in_points_dim = {:d}\n'.format(self.in_points_dim))
             text_file.write('in_features_dim = {:d}\n'.format(self.in_features_dim))
             text_file.write('in_radius = {:.6f}\n'.format(self.in_radius))
-            text_file.write('input_threads = {:d}\n\n'.format(self.input_threads))
+            text_file.write('input_threads = {:d}\n'.format(self.input_threads))
 
             # Model parameters
+            text_file.write('\n')
             text_file.write('# Model parameters\n')
             text_file.write('# ****************\n\n')
 
@@ -326,10 +404,11 @@ class Config:
             text_file.write('num_layers = {:d}\n'.format(self.num_layers))
             text_file.write('first_features_dim = {:d}\n'.format(self.first_features_dim))
             text_file.write('use_batch_norm = {:d}\n'.format(int(self.use_batch_norm)))
-            text_file.write('batch_norm_momentum = {:.6f}\n\n'.format(self.batch_norm_momentum))
-            text_file.write('segmentation_ratio = {:.6f}\n\n'.format(self.segmentation_ratio))
+            text_file.write('batch_norm_momentum = {:.6f}\n'.format(self.batch_norm_momentum))
+            text_file.write('segmentation_ratio = {:.6f}\n'.format(self.segmentation_ratio))
 
             # KPConv parameters
+            text_file.write('\n')
             text_file.write('# KPConv parameters\n')
             text_file.write('# *****************\n\n')
 
@@ -343,11 +422,12 @@ class Config:
             text_file.write('aggregation_mode = {:s}\n'.format(self.aggregation_mode))
             text_file.write('modulated = {:d}\n'.format(int(self.modulated)))
             text_file.write('n_frames = {:d}\n'.format(self.n_frames))
-            text_file.write('max_in_points = {:d}\n\n'.format(self.max_in_points))
-            text_file.write('max_val_points = {:d}\n\n'.format(self.max_val_points))
-            text_file.write('val_radius = {:.6f}\n\n'.format(self.val_radius))
+            text_file.write('max_in_points = {:d}\n'.format(self.max_in_points))
+            text_file.write('max_val_points = {:d}\n'.format(self.max_val_points))
+            text_file.write('val_radius = {:.6f}\n'.format(self.val_radius))
 
             # Training parameters
+            text_file.write('\n')
             text_file.write('# Training parameters\n')
             text_file.write('# *******************\n\n')
 
@@ -357,7 +437,7 @@ class Config:
             for e, d in self.lr_decays.items():
                 text_file.write(' {:d}:{:f}'.format(e, d))
             text_file.write('\n')
-            text_file.write('grad_clip_norm = {:f}\n\n'.format(self.grad_clip_norm))
+            text_file.write('grad_clip_norm = {:f}\n'.format(self.grad_clip_norm))
 
 
             text_file.write('augment_symmetries =')
@@ -372,7 +452,7 @@ class Config:
             text_file.write('augment_scale_anisotropic = {:d}\n'.format(int(self.augment_scale_anisotropic)))
             text_file.write('augment_scale_min = {:.6f}\n'.format(self.augment_scale_min))
             text_file.write('augment_scale_max = {:.6f}\n'.format(self.augment_scale_max))
-            text_file.write('augment_color = {:.6f}\n\n'.format(self.augment_color))
+            text_file.write('augment_color = {:.6f}\n'.format(self.augment_color))
 
             text_file.write('weight_decay = {:f}\n'.format(self.weight_decay))
             text_file.write('segloss_balance = {:s}\n'.format(self.segloss_balance))
