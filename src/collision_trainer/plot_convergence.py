@@ -30,6 +30,7 @@ from os.path import isfile, join, exists
 from os import listdir, remove, getcwd
 from sklearn.metrics import confusion_matrix
 import time
+import pickle
 
 # My libs
 from utils.config import Config
@@ -37,12 +38,8 @@ from utils.metrics import IoU_from_confusions, smooth_metrics, fast_confusion
 from utils.ply import read_ply
 
 # Datasets
-from datasets.ModelNet40 import ModelNet40Dataset
-from datasets.S3DIS import S3DISDataset
-from datasets.ISPRS import ISPRSDataset
-from datasets.SemanticKitti import SemanticKittiDataset
-from datasets.SemanticKitti2 import SemanticKitti2Dataset
 from datasets.MyhalSim import MyhalSimDataset
+from datasets.MyhalCollision import MyhalCollisionDataset
 
 # ----------------------------------------------------------------------------------------------------------------------
 #
@@ -1149,6 +1146,264 @@ def compare_convergences_normals(list_of_paths, list_of_labels=None):
     plt.show()
 
 
+def compare_convergences_collision2D(list_of_paths, list_of_names=None):
+
+    # Parameters
+    # **********
+
+    smooth_n = 4
+
+    if list_of_names is None:
+        list_of_names = [str(i) for i in range(len(list_of_paths))]
+
+    # Read Logs
+    # *********
+
+    all_pred_epochs = []
+    all_mean_fe = []
+    all_last_fe = []
+
+    # Load parameters
+    config = Config()
+    config.load(list_of_paths[0])
+    
+
+
+    for path in list_of_paths:
+
+        # Load config and saved results
+        future_errors = np.loadtxt(join(path, 'future_error.txt'))
+        print(future_errors.shape, future_errors.dtype)
+
+        max_epoch = future_errors.shape[0]
+
+        # Aggregate results
+        epochs_d = np.array([i for i in range(max_epoch)])
+        all_pred_epochs += [epochs_d[smooth_n:-smooth_n]]
+        all_mean_fe += [running_mean(np.mean(future_errors, axis=1), smooth_n)]
+        all_last_fe += [running_mean(future_errors[:, -1], smooth_n)]
+
+        
+    
+
+    # Plots
+    # *****
+
+    # Figure
+    fig = plt.figure('mean FE')
+    for i, name in enumerate(list_of_names):
+        p = plt.plot(all_pred_epochs[i], all_mean_fe[i], linewidth=1, label=name)
+    plt.xlabel('epochs')
+    plt.ylabel('mean_fe')
+
+    # Set limits for y axis
+    #plt.ylim(0.55, 0.95)
+
+    # Display legends and title
+    plt.legend()
+
+    # Customize the graph
+    ax = fig.gca()
+    ax.grid(linestyle='-.', which='both')
+    #ax.set_yticks(np.arange(0.8, 1.02, 0.02))
+
+    # Figure
+    fig = plt.figure('last FE')
+    for i, name in enumerate(list_of_names):
+        p = plt.plot(all_pred_epochs[i], all_last_fe[i], linewidth=1, label=name)
+    plt.xlabel('epochs')
+    plt.ylabel('last_fe')
+
+    # Set limits for y axis
+    #plt.ylim(0.55, 0.95)
+
+    # Display legends and title
+    plt.legend()
+
+    # Customize the graph
+    ax = fig.gca()
+    ax.grid(linestyle='-.', which='both')
+    #ax.set_yticks(np.arange(0.8, 1.02, 0.02))
+
+    # Show all
+    plt.show()
+
+    a = 1/0
+
+
+    for path in list_of_paths:
+
+        # TODO: SAVE more than right now and find better visualization
+
+
+        # Load or compute the gif results
+        folder_stats_file = join(path, 'log_stats_{:d}.pkl'.format(max_epoch))
+        if exists(folder_stats_file):
+            with open(folder_stats_file, 'rb') as file:
+                all_p, all_gt = pickle.load(file)
+
+        else:
+
+            file_names = [f[:-9] for f in os.listdir(folder) if f.endswith('f_gt.gif')]
+            all_p = []
+            all_gt = []
+            for f_i, f_name in enumerate(file_names):
+
+                # read gt gif
+                gt_name = join(folder, f_name + '_f_gt.gif')
+                im = imageio.get_reader(gt_name)
+                frames = []
+                for frame in im:
+                    frames.append(frame[::zoom, ::zoom, :3])
+                imgs = np.stack(frames)
+
+                # Get gt mask of moving objects
+                gt_mask = imgs[:, :, :, 0] > 1
+
+                # Morpho closing to reduce noise
+                struct2 = ndimage.generate_binary_structure(3, 2)
+                struct2[[0, 2], :, :] = False
+                gt_closed = ndimage.binary_closing(gt_mask, structure=struct2, iterations=3, border_value=1)
+
+                # Debug
+                #fig, anim = show_future_anim(gt_mask.astype(np.uint8) * 255)
+                #fig2, anim2 = show_future_anim(gt_closed.astype(np.uint8) * 255)
+                #plt.show()
+
+                # Load predictions
+                pre_name = join(folder, f_name + '_f_pre.gif')
+                im = imageio.get_reader(pre_name)
+                frames = []
+                for frame in im:
+                    frames.append(frame[::zoom, ::zoom, :3])
+                preds = np.stack(frames)
+
+                # Get moving predictions (with red/yellow colormap)
+                r = np.copy(preds[1:, :, :, 0]).astype(np.float32)
+                g = np.copy(preds[1:, :, :, 1]).astype(np.float32)
+                no_red_mask = r < 1
+                g[no_red_mask] = 0
+                p = (r + g) / (255 + 255)
+                gt = gt_closed[1:, :, :]
+
+                all_p.append(p)
+                all_gt.append(gt)
+
+                print(f_i, len(file_names))
+
+            # Stack and save these stats
+            all_p = np.stack(all_p)
+            all_gt = np.stack(all_gt)
+
+            with open(folder_stats_file, 'wb') as file:
+                pickle.dump([all_p, all_gt], file)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        # Get validation IoUs
+        file = join(path, 'val_IoUs.txt')
+        val_IoUs = load_single_IoU(file, nc_model)
+
+        # Get Subpart IoUs
+        file = join(path, 'subpart_IoUs.txt')
+        subpart_IoUs = load_single_IoU(file, nc_model)
+
+        # Get mean IoU
+        val_class_IoUs, val_mIoUs = IoU_class_metrics(val_IoUs, smooth_n)
+        subpart_class_IoUs, subpart_mIoUs = IoU_class_metrics(subpart_IoUs, smooth_n)
+
+        # Aggregate results
+        all_pred_epochs += [np.array([i for i in range(len(val_IoUs))])]
+        all_val_mIoUs += [val_mIoUs]
+        all_val_class_IoUs += [val_class_IoUs]
+        all_subpart_mIoUs += [subpart_mIoUs]
+        all_subpart_class_IoUs += [subpart_class_IoUs]
+
+        s = '{:^6.1f}|'.format(100*subpart_mIoUs[-1])
+        for IoU in subpart_class_IoUs[-1]:
+            s += '{:^6.1f}'.format(100*IoU)
+        print(s)
+
+    print(6*'-' + '|' + 6*config.num_classes*'-')
+    for snap_IoUs in all_val_class_IoUs:
+        if len(snap_IoUs) > 0:
+            s = '{:^6.1f}|'.format(100*np.mean(snap_IoUs[-1]))
+            for IoU in snap_IoUs[-1]:
+                s += '{:^6.1f}'.format(100*IoU)
+        else:
+            s = '{:^6s}'.format('-')
+            for _ in range(config.num_classes):
+                s += '{:^6s}'.format('-')
+        print(s)
+
+    # Plots
+    # *****
+
+    # Figure
+    fig = plt.figure('mIoUs')
+    for i, name in enumerate(list_of_names):
+        p = plt.plot(all_pred_epochs[i], all_subpart_mIoUs[i], '--', linewidth=1, label=name)
+        plt.plot(all_pred_epochs[i], all_val_mIoUs[i], linewidth=1, color=p[-1].get_color())
+    plt.xlabel('epochs')
+    plt.ylabel('IoU')
+
+    # Set limits for y axis
+    #plt.ylim(0.55, 0.95)
+
+    # Display legends and title
+    plt.legend(loc=4)
+
+    # Customize the graph
+    ax = fig.gca()
+    ax.grid(linestyle='-.', which='both')
+    #ax.set_yticks(np.arange(0.8, 1.02, 0.02))
+
+    for c_i, c_name in enumerate(class_list):
+        if c_i in displayed_classes:
+
+            # Figure
+            fig = plt.figure(c_name + ' IoU')
+            for i, name in enumerate(list_of_names):
+                plt.plot(all_pred_epochs[i], all_val_class_IoUs[i][:, c_i], linewidth=1, label=name)
+            plt.xlabel('epochs')
+            plt.ylabel('IoU')
+
+            # Set limits for y axis
+            #plt.ylim(0.8, 1)
+
+            # Display legends and title
+            plt.legend(loc=4)
+
+            # Customize the graph
+            ax = fig.gca()
+            ax.grid(linestyle='-.', which='both')
+            #ax.set_yticks(np.arange(0.8, 1.02, 0.02))
+
+
+
+    # Show all
+    plt.show()
+
 
 # ----------------------------------------------------------------------------------------------------------------------
 #
@@ -1157,1212 +1412,31 @@ def compare_convergences_normals(list_of_paths, list_of_labels=None):
 #
 
 
-def ModelNet40_first_test(old_res_lim):
-    """
-    First tries with ModelNet40
-    First we compare convergence of a very very deep network on ModelNet40, with our without bn
-    Then, We try the resuming of previous trainings. Which works quite well.
-    However in the mean time, we change how validation worked by calling net.eval()/net.train() before/after
-    validation. It seems that the network perform strange when calling net.eval()/net.train() although it should be the
-    right way to do it.
-    Then we try to change BatchNorm1D with InstanceNorm1D and compare with and without calling eval/train at validation.
-    (Also with a faster lr decay).
-    --- MISTAKE FOUND --- the batch norm momentum was inverted 0.98 instead of 0.02.
-    See next experiment for correct convergences. Instance norm seems not as good
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-03-18_16-04-20'
-    end = 'Log_2020-03-20_16-59-40'
-
-    if end < 'Log_2020-03-22_19-30-19':
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-
-    # Give names to the logs (for legends)
-    logs_names = ['with_bn',
-                  'without_bn',
-                  'with_bn2',
-                  'without_bn2',
-                  'lrd_80_Inorm_eval_train',
-                  'lrd_80_Inorm_always_train',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_batch_norm(old_res_lim):
-    """
-    Compare different type of batch norm now that it has been fixed. Batch norm seems the best easily. Instance norm
-    crewated a NAN loss so avoid this one.
-    Now try fast experiments. First reduce network size. Reducing the number of convolution per layer does not affect
-    results (maybe because dataset is too simple???). 5 small layers is way better that 4 big layers.
-    Now reduce number of step per epoch and maybe try balanced sampler. Balanced sampler with fewer steps per epoch is
-    way faster for convergence and gets nearly the same scores. so good for experimenting. However we cant really
-    conclude between parameters which will get the same score (like the more layers) because the dataset my be
-    limitating. We can only conclude if something is not good and reduce score.
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-03-20_16-59-41'
-    end = 'Log_2020-04-13_18-14-44'
-
-    if end < 'Log_2020-03-22_19-30-19':
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-
-    # Give names to the logs (for legends)
-    logs_names = ['no_norm',
-                  'IN',
-                  'BN',
-                  '5_small_layer-d0=0.02',
-                  '3_big_layer-d0=0.02',
-                  '3_big_layer-d0=0.04',
-                  'small-e_n=300',
-                  'small-e_n=300-balanced_train',
-                  'small-e_n=300-balanced_traintest',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_fast_vs_results(old_res_lim):
-    """
-    Try lr decay with fast convergence (epoch_n=300 and balanced traintest). 80 is a good value.
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-03-21_16-09-17'
-    end = 'Log_2020-03-21_16-09-36'
-
-    if end < 'Log_2020-03-22_19-30-19':
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = np.insert(logs, 1, join(res_path, 'Log_2020-03-21_11-57-45'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['lrd=120',
-                  'lrd=80',
-                  'lrd=40',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_grad_clipping(old_res_lim):
-    """
-    Test different grad clipping. No difference so we can move on
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-03-21_18-21-37'
-    end = 'Log_2020-03-21_18-30-01'
-
-    if end < 'Log_2020-03-22_19-30-19':
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = np.insert(logs, 0, join(res_path, 'Log_2020-03-21_11-57-45'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['value_clip_100',
-                  'norm_clip_100',
-                  'value_clip_10',
-                  'norm_clip_10',
-                  'no_clip',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_KP_extent(old_res_lim):
-    """
-    Test differents mode et kp extent. sum et extent=2.0 definitivement moins bon (trop de recouvrement des kp
-    influences, noyau moins versatile). les closest semble plutot bon et le sum extent=1.5 pas mal du tout () peut
-    etre le meilleur. A confirmer sur gros dataset
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-03-21_18-30-02'
-    end = 'Log_2020-03-21_23-36-18'
-
-    if end < 'Log_2020-03-22_19-30-19':
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = np.insert(logs, 0, join(res_path, 'Log_2020-03-21_11-57-45'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['KPe=1.0_sum_linear',
-                  'KPe=1.5_sum_linear',
-                  'KPe=2.0_sum_linear',
-                  'KPe=1.5_closest_linear',
-                  'KPe=2.0_closest_linear',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_gaussian(old_res_lim):
-    """
-    Test different extent in gaussian mode. extent=1.5 seems the best. 2.0 is not bad. But in any case, it does not
-    perform better than 1.5-linear-sum at least on this dataset.
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-03-21_23-36-19'
-    end = 'Log_2020-03-21_24-14-44'
-
-    if end < old_res_lim:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = np.insert(logs, 4, join(res_path, 'Log_2020-03-21_19-35-11'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['KPe=1.0_sum_gaussian',
-                  'KPe=1.5_sum_gaussian',
-                  'KPe=2.0_sum_gaussian',
-                  'KPe=2.5_sum_gaussian',
-                  'KPe=1.5_sum_linear',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_normals(old_res_lim):
-    """
-    Test different way to add normals. Seems pretty much the same and we dont care about normals.
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-03-22_10-18-56'
-    end = 'Log_2020-03-22_13-32-51'
-
-    if end < old_res_lim:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = np.insert(logs, 0, join(res_path, 'Log_2020-03-21_19-35-11'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['no_normals',
-                  'anisotropic_scale_normals',
-                  'wrong_scale_normals',
-                  'only_symmetries_normals(cheating)',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_radius(old_res_lim):
-    """
-    Test different convolution radius. It was expected that larger radius would means slower networks but better
-    performances. In fact we do not see much difference (again because of the dataset maybe?)
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-03-22_13-32-52'
-    end = 'Log_2020-03-22_19-30-17'
-
-    if end < old_res_lim:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = np.insert(logs, 2, join(res_path, 'Log_2020-03-21_19-35-11'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['KPe=0.9_r=1.5',
-                  'KPe=1.2_r=2.0',
-                  'KPe=1.5_r=2.5',
-                  'KPe=1.8_r=3.0',
-                  'KPe=2.1_r=3.5',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_deform(old_result_limit):
-    """
-    Test deformable convolution with different offset decay. Without modulations 0.01 seems the best. With
-    modulations 0.1 seems the best. In all cases 1.0 is to much. We need to show deformations for verification.
-
-    It seems that deformations are not really fittig the point cloud. They just reach further away. W need to try on
-    other datasets and with deformations earlier to see if fitting loss works
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-03-22_19-30-21'
-    end = 'Log_2020-03-25_19-30-17'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-    logs = np.insert(logs, 0, join('old_results', 'Log_2020-03-21_19-35-11'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['normal',
-                  'offset_d=0.01',
-                  'offset_d=0.1',
-                  'offset_d=1.0',
-                  'offset_d=0.001',
-                  'offset_d=0.001_modu',
-                  'offset_d=0.01_modu',
-                  'offset_d=0.1_modu',
-                  'offset_d=1.0_modu',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def S3DIS_first(old_result_limit):
-    """
-    Test first S3DIS. First two test have all symetries (even vertical), which is not good). We corecct for
-    the following.
-    Then we try some experiments with different input scalea and the results are not as high as expected.
-     WHY?
-     FOUND IT! Problem resnet bottleneck should divide out-dim by 4 and not by 2
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-03-25_19-30-17'
-    end = 'Log_2020-04-03_11-12-05'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['Fin=1_R=1.2_r=0.02 (error all symetries)',
-                  'Fin=1_R=2.5_r=0.04 (error all symetries)',
-                  'Fin=5_R=1.2_r=0.02',
-                  'Fin=5_R=1.8_r=0.03',
-                  'Fin=5_R=2.5_r=0.04',
-                  'original_normal',
-                  'original_deform',
-                  'original_random_sampler',
-                  'original_potentials_batch16',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def S3DIS_go(old_result_limit):
-    """
-    Test S3DIS.
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-04-03_11-12-07'
-    end = 'Log_2020-04-07_15-30-17'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['R=2.0_r=0.04_Din=128_potential',
-                  'R=2.0_r=0.04_Din=64_potential',
-                  'R=1.8_r=0.03',
-                  'R=1.8_r=0.03_deeper',
-                  'R=1.8_r=0.03_deform',
-                  'R=2.0_r=0.03_megadeep',
-                  'R=2.5_r=0.03_megadeep',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def SemanticKittiFirst(old_result_limit):
-    """
-    Test SematicKitti. First exps.
-    Try some class weight strategies. It seems that the final score is not impacted so much. With weights, some classes
-    are better while other are worse, for a final score that remains the same.
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-04-07_15-30-17'
-    end = 'Log_2020-04-11_21-34-16'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['R=5.0_dl=0.04',
-                  'R=5.0_dl=0.08',
-                  'R=10.0_dl=0.08',
-                  'R=10.0_dl=0.08_20*weigths',
-                  'R=10.0_dl=0.08_20*sqrt_weigths',
-                  'R=10.0_dl=0.08_100*sqrt_w',
-                  'R=10.0_dl=0.08_100*sqrt_w_capped',
-                  'R=10.0_dl=0.08_no_w']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def SemanticKitti_scale(old_result_limit):
-    """
-    Test SematicKitti. Try different scales of input raduis / subsampling.
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-04-11_21-34-15'
-    end = 'Log_2020-04-20_11-52-58'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['R=10.0_dl=0.08',
-                  'R=4.0_dl=0.04',
-                  'R=6.0_dl=0.06',
-                  'R=6.0_dl=0.06_inF=2',
-                  'test',
-                  'test',
-                  'test',
-                  'test',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def S3DIS_deform(old_result_limit):
-    """
-    Debug S3DIS deformable.
-    At checkpoint 50, the points seem to start fitting the shape, but then, they just get further away from each other
-    and do not care about input points. The fitting loss seems broken?
-
-    10* fitting loss seems pretty good fitting the point cloud. It seems that the offset decay was a bit to low,
-    because the same happens without the 0.1 hook. So we can try to keep a 0.5 hook and multiply offset decay by 2.
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-04-22_11-52-58'
-    end = 'Log_2020-04-24_11-31-24'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-    logs = np.insert(logs, 0, 'results/Log_2020-04-04_10-04-42')
-
-    # Give names to the logs (for legends)
-    logs_names = ['off_d=0.01_baseline',
-                  'off_d=0.01',
-                  'off_d=0.05',
-                  'off_d=0.05_corrected',
-                  'off_d=0.05_norepulsive',
-                  'off_d=0.05_repulsive0.5',
-                  'off_d=0.05_10*fitting',
-                  'off_d=0.05_no_hook0.1',
-                  'NEWPARAMS_fit=0.05_loss=0.5_(=off_d=0.1_hook0.5)',
-                  'same_normal',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def S3DIS_deform_bis(old_result_limit):
-    """
-    Debug S3DIS deformable.
-    At checkpoint 50, the points seem to start fitting the shape, but then, they just get further away from each other
-    and do not care about input points. The fitting loss seems broken?
-
-    10* fitting loss seems pretty good fitting the point cloud. It seems that the offset decay was a bit to low,
-    because the same happens without the 0.1 hook. So we can try to keep a 0.5 hook and multiply offset decay by 2.
-
-    We changed the grid subsampling so that the orientation of the grid is random. Therefore, the input points are not
-    always at the same position like a grid, amd the deformations do not fit the "grid-like" point positions. Instead,
-    they stochastically fit the surface and its way better behavior.
-
-    Eventually we add a new parameter for the repulsive extent (whose value should be between 1 and 2 times KP_extent)
-    and find that adding mor deform layers leads to better results. We also remove the hook, but instead apply a
-    specific learning rate to the deformation parameters (like in the original paper). This last experiemnts performs
-    extremely well.
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-04-24_11-31-23'
-    end = 'Log_2020-04-28_11-02-32'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['normal',
-                  'fit=0.01_loss=0.1',
-                  'fit=0.05_loss=0.1',
-                  'fit=0.1_loss=0.1',
-                  'normal_new_grid_subs',
-                  'fit=0.05_loss=1.0(d_r=6.0)',
-                  'fit=0.05_loss=1.0(d_r=4.0)',
-                  'MOREDEFORM_KP_ext=1.2_rep_ext=1.2',
-                  'same_IS_IT_RANDOM?',
-                  'same_NEW_lr_instead_of_hook?',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def SemanticKitti_movable(old_result_limit):
-    """
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-04-28_11-02-32'
-    end = 'Log_2020-05-04_19-17-50'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['normal_nframes=1',
-                  'normal_nframes=2',
-                  'deform_nframes=2(validationR=20.0)',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ISPRS(old_result_limit):
-    """
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-05-18_11-43-46'
-    end = 'Log_2020-05-20_29-17-50'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['test=1',
-                  'test=2',
-                  'test',
-                  'test',
-                  'test',
-                  'test',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def normal_regression_ModelNet40(old_result_limit):
-    """
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-06-18_16-55-22'
-    end = 'Log_2020-06-20_09-26-57'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['allrot+anisotrope-Eclideanloss',
-                  'norot+isotrope-Eclideanloss',
-                  'allrot-isotrope-euclidean_oriented',
-                  'allrot-isotrope-cosine_loss',
-                  'allrot-isotrope-Eclideanloss',
-                  'Same+equivariant-loss=0.1',
-                  'Same+equivariant-loss=10.0',
-                  'Same+equivariant-loss=0.1,higher_lr,longer_decay',
-                  'SmallNet_equiloss=1.0',
-                  'SmallNet_equiloss=0',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def normal_regression_ModelNet40_bis(old_result_limit):
-    """
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-06-20_00-47-53'
-    end = 'Log_2020-06-22_08-48-53'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['eqL=1.0/AR/3L/r=0.02/isotrop_no_sym',
-                  'eqL=0.0/AR/3L/r=0.02/isotrop_no_sym',
-                  'eqL=0.0/AR/3L/r=0.02/+moreaugment',
-                  'eqL=0.0/AR/3L/r=0.02/+moreaugment/+harderloss',
-                  'eqL=1.0/same/eqL_orient',
-                  'eqL=1.0/same/eqL_unorient',
-                  'test',
-                  'test',
-                  'test']
-
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_invariant(old_result_limit):
-    """
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-06-22_08-48-54'
-    end = 'Log_2020-06-25_10-59-46'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['Normal_NR',
-                  'Normal_R',
-                  'PseudoInvar_R',
-                  'PseudoInvar_N',
-                  'PseudoInvar_R-stronger',
-                  'PseudoInvar_N-stronger',
-                  'PseudoEqui_N',
-                  'test',
-                  'test',
-                  'test',
-                  'test',
-                  'test']
-
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_equivariant(old_result_limit):
-    """
-    Ok first really equivaraint network.
-    Otho loss has a big influence. The lower it is, the further the transformation can be from real rotations.
-    ortho=0.001 means we can have basically any non rigid transformation. This is not really what we want although
-    maybe it could help that the rotations are not completely rotations but also a little bit deformed???
-    BEWARE, to high ortho loss can make the network go NaN sometimes
-
-    Initialization of the lrf predictor is important. if you initialize with identity, the values will likely never
-    go far away from that (especially if you keep a high ortho loss)
-
-    Best is to initialize with random values in [-1, 1] so that ortho loss make it converge to any randomn rotation.
-
-    detach lrf makes it faster but does not seem to perform worse. WHY? Can the network really learn lrf of random
-    is good?
-
-    Eventually we see that lr decay was to fast. When attaching lrf, consider slowing down the learning process.
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-06-26_01-07-40'
-    end = 'Log_2020-06-28_07-41-20'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['First with bug => not equi',
-                  'First equivariant / ortho=0.001',
-                  'First equivariant / ortho=0.1',
-                  'ortho=0.1 / randinit no I bias',
-                  'same / detached lrf',
-                  'BAD-too short lr-decay',
-                  'BAD-too short lr-decay/f_lrf=2',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_equivariant_2(old_result_limit):
-    """
-    It seems anisotropy is a bad idea. Furthermore, it is just not very compatible with the spirit of he article.
-
-    Augment symetries does not help to get better results. Furthermore, because symetries are also applied to lrfs,
-    sym or nosym augment should be equivalent.
-
-    Attaching lrf does not do anything. In anycase, having more than one lrf is useless. If all lrf are equivariant,
-    then the multiple alignment are all equivalent and do not give more information.
-
-    We end up with Identity lrf and only one alignment is the best
-
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-06-28_07-41-30'
-    end = 'Log_2020-07-02_11-03-00'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-    logs = np.insert(logs, 0, join(res_path, 'Log_2020-06-26_22-17-46'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['grad-lrf/ort=0.1/no_augm/2*2^n',
-                  'grad-lrf/ort=0.01/rot+syms/2*2^n',
-                  'grad-lrf/ort=0.01/rot+syms+ani/2*2^n',
-                  'deta-lrf/rot+syms/IdentityLRF',
-                  'deta-lrf/no_augm/IdentityLRF-deeper',
-                  'same/RandomLRF_2*1^n',
-                  'same/RandomLRF_2*2^n',
-                  'same/RandomLRF_4*1^n',
-                  'smallnet/no_augm/IdentityLRF',
-                  'smallnet/rot+syms/IdentityLRF',
-                  'smallnet/RandomLRF_4*1^n',
-                  'smallnet/RandomLRF_2*2^n',
-                  'smallnet/attach_2*4^n/ortho=0.1',
-                  'smallnet/attach_2*4^n/ortho=0.01',
-                  'test',
-                  'test',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def S3DIS_equivariant(old_result_limit):
-    """
-    It seems anisotropy is a bad idea. Furthermore, it is just not very compatible with the spirit of he article.
-
-    Augment symetries does not help to get better results. Furthermore, because symetries are also applied to lrfs,
-    sym or nosym augment should be equivalent.
-
-    Attaching lrf does not do anything. In anycase, having more than one lrf is useless. If all lrf are equivariant,
-    then the multiple alignment are all equivalent and do not give more information.
-
-    We end up with Identity lrf and only one alignment is the best
-
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-07-02_11-03-00'
-    end = 'Log_2020-07-02_23-03-00'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-    logs = np.insert(logs, 0, join('old_results', 'Log_2020-04-24_11-31-23'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['old_normal',
-                  'normal',
-                  'equivaraint',
-                  'normal-ani',
-                  'equivaraint-ani',
-                  'test',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_equivariant_3(old_result_limit):
-    """
-    New network head that uses the lrf to get equivariant features
-        - Seems that equi head which is neither invariant/equivariant, is quite robust to rotation. N/R gives
-        good results. N/N gives the best results from any equivaraint network and R/R gives very good results too.
-
-    New equivariant that combines the neighbors lrf in the convolution, maybe better to learn new lrfs.
-        - Does not seem to help get better results. Maybe we should try on S3DIS?
-        WE DID NOT CHECK SHADOW LRFs. SEE NEXT EXP
-
-    Also, slower decay after epoch 100 gets better loss but is overtraining because it gets worse results. Maybe
-    try it on another dataset
-
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-07-02_23-03-00'
-    end = 'Log_2020-07-05_09-46-08'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-    logs = np.insert(logs, 0, join(res_path, 'Log_2020-06-29_14-02-43'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['invhead/IdLRF',
-                  'equi_head/IdLRF/AR',
-                  'equi_head/IdLRF/NR',
-                  'equi_head/det_4*2^n/o=0.1/AR',
-                  'equi_head/att_4*2^n/o=0.1/AR',
-                  'equi_head/v2_1*2^n/o=0.1/AR',
-                  'equi_head/v2_2*2^n/o=0.1/AR',
-                  'equi_head/v2_1*2^n/o=0.01/AR',
-                  'same as bellow slower decay after ep100',
-                  'equi_head/v2_1*2^n/o=0.5/AR',
-                  'test',
-                  'test',
-                  'test']
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_equivariant_4(old_result_limit):
-    """
-    New lrf alignment without matmul is faster. And new way to deal with shadow lrf so that they are really shadow
-
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-07-04_21-37-22'
-    end = 'Log_2020-07-10_12-20-33'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['equi_head/v2_1*2^n/o=0.5/AR',
-                  'correct-shadowlrf/v2_det_2*2^n/o=1/AR',
-                  'correct-shadowlrf/v2_att_2*2^n/o=1/AR',
-                  'correct-shadowlrf/v2_att_2*2^n/o=0.5/AR',
-                  'correct-shadowlrf/v2_att_2*2^n/o=0.5/NR',
-                  'v2_det_2*2^n/o=0.5/aligned_head/NR',
-                  'v2_det_2*2^n/o=0.5/aligned_head_CHEAT/NR',
-                  'v2_det_2*2^n/o=0.5/aligned_head_CHEAT/AR',
-                  'same-slower-decay-late',
-                  'same/1*1^n/o=0.5/NR',
-                  'test',
-                  'test',
-                  'test']
-
-    # TODO: gradient propagation study. Fix all the weights in convolution, let the network learn only the LRF_mlp.
-    #       NO orthonormalization los, see if we diverge, converge, improve or decrease results
-    #       Same WITH ortho loss
-
-    # TODO: No aumgent vs ROT augment: rot augment makes the network robust to pooling variations. But we can argue
-    #  that we align the shape before pooling which is easy to implement. Verify that N/R < R/R in the case pooling is
-    #  not aligned
-
-    # TODO: Aligned but not equivariant: Use a convolution to predict the lrf
-
-    # TODO: Combine lrf at multiple scale by adding lrf of next layer (Compute lrf at run time and compute it for
-    #       each layer)
-
-    # TODO: Combine lrf in convolution. Realign the neighbors with the center lrf and mlp them into features. Then
-    #  combine in convolution
-    #
-
-
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_equivariant_5(old_result_limit):
-    """
-    Some first results here, we can see that cheat head (alignment of shapes by groundtruth instead of global pca) gets
-    better results.
-
-    Then we seem to have a slightlely better result when attached lrf (TO be confirmed)
-
-    Now new ablation study: what if we input constant LRF as input ? Does 2x2 perform better than 1x1?
-
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-07-07_09-22-11'
-    end = 'Log_2020-07-11_22-17-38'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-    logs = np.insert(logs, 2, join(res_path, 'Log_2020-07-05_09-46-09'))
-    logs = np.insert(logs, 3, join(res_path, 'Log_2020-07-05_09-46-30'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['v2det_2x2/o=0.5/CHEAT/AR',
-                  'v2det_1x1/o=0.5/CHEAT/AR',
-                  'v2det_2x2/o=1.0/AR',
-                  'v2att_2x2/o=1.0/AR',
-                  'const_in_lrf/v2det_2x2/o=0.5/AR',
-                  'const_in_lrf/v2det_1x1/o=0.5/AR',
-                  'const_in_lrf/v1det_1x1/o=0.5/AR',
-                  'const_in_lrf/v2alldet_1x1/o=0.5/AR',
-                  'v2alldet_1x1/o=0.5/AR',
-                  'v2det_1x1/o=0.5/AR',
-                  'test',
-                  'test',
-                  'test']
-
-    # TODO: gradient propagation study. Fix all the weights in convolution, let the network learn only the LRF_mlp.
-    #       NO orthonormalization los, see if we diverge, converge, improve or decrease results
-    #       Same WITH ortho loss
-
-    # TODO: No aumgent vs ROT augment: rot augment makes the network robust to pooling variations. But we can argue
-    #  that we align the shape before pooling which is easy to implement. Verify that N/R < R/R in the case pooling is
-    #  not aligned
-
-    # TODO: Aligned but not equivariant: Use a convolution to predict the lrf
-
-    # TODO: Combine lrf at multiple scale by adding lrf of next layer (Compute lrf at run time and compute it for
-    #       each layer)
-
-    # TODO: Combine lrf in convolution. Realign the neighbors with the center lrf and mlp them into features. Then
-    #  combine in convolution
-    #
-
-
-
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ShapeNetPart1(old_result_limit):
-    """
-    Some first results here, we can see that cheat head (alignment of shapes by groundtruth instead of global pca) gets
-    better results.
-
-    Then we seem to have a slightlely better result when attached lrf (TO be confirmed)
-
-    Now new ablation study: what if we input constant LRF as input ? Does 2x2 perform better than 1x1?
-
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-07-11_22-17-38'
-    end = 'Log_2020-07-16_11-01-33'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-
-    # Give names to the logs (for legends)
-    logs_names = ['normal',
-                  'normal_aniso',
-                  'normal_0.9-1.1',
-                  'v2det_1x1/o=0.5/NR',
-                  'same/in_f=4/NR',
-                  'same/in_f=4/AR',
-                  'v2alldet_1x1/o=0.5/NR',
-                  'v2det_2x2/o=0.5/NR',
-                  'v2alldet_1x1_ID/o=0.5/NR',
-                  'same/in_f=1',
-                  'normal/in_f1/NR',
-                  'normal/in_f1/AR',
-                  'v2alldet_1x1/in_f1/AR',
-                  'v2det_1x1/in_f1/AR',
-                  'same_multi_lrf_v1',
-                  'same_multi_lrf_v2',
-                  'v2det_4x1/in_f1/AR',
-                  'v2det_4x1/in_f4/AR']
-
-    # TODO: gradient propagation study. Fix all the weights in convolution, let the network learn only the LRF_mlp.
-    #       NO orthonormalization los, see if we diverge, converge, improve or decrease results
-    #       Same WITH ortho loss
-
-    # TODO: No aumgent vs ROT augment: rot augment makes the network robust to pooling variations. But we can argue
-    #  that we align the shape before pooling which is easy to implement. Verify that N/R < R/R in the case pooling is
-    #  not aligned
-
-    # TODO: Aligned but not equivariant: Use a convolution to predict the lrf
-
-    # TODO: Combine lrf at multiple scale by adding lrf of next layer (Compute lrf at run time and compute it for
-    #       each layer)
-
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ShapeNetPart2(old_result_limit):
-    """
-    Some first results here, we can see that cheat head (alignment of shapes by groundtruth instead of global pca) gets
-    better results.
-
-    Then we seem to have a slightlely better result when attached lrf (TO be confirmed)
-
-    Now new ablation study: what if we input constant LRF as input ? Does 2x2 perform better than 1x1?
-
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-07-16_11-01-33'
-    end = 'Log_2020-07-18_22-53-34'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-    logs = np.insert(logs, 0, join(res_path, 'Log_2020-07-15_07-54-21'))
-    logs = np.insert(logs, 1, join(res_path, 'Log_2020-07-15_07-55-23'))
-    logs = np.insert(logs, 2, join(res_path, 'Log_2020-07-13_19-12-48'))
-    logs = np.insert(logs, 3, join(res_path, 'Log_2020-07-13_19-16-05'))
-    logs = np.insert(logs, 4, join(res_path, 'Log_2020-07-15_13-34-13'))
-    logs = np.insert(logs, 10, join(res_path, 'Log_2020-07-29_12-00-10'))
-    logs = np.insert(logs, 11, join(res_path, 'Log_2020-07-29_23-42-32'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['normal/in_f1/NR',
-                  'normal/in_f1/AR',
-                  'v2det_1x1/in_f4/NR',
-                  'v2alldet_1x1/in_f4/NR',
-                  'v2alldet_1x1/in_f1/NR',
-                  'v2alldet_4x1/in_f1/AR',
-                  'v2det_4x1/in_f1/AR',
-                  'v2det_4x1/in_f4/AR',
-                  'v2det_4x1/in_f1/o=2.0',
-                  'v2det_4x1/in_f1/o=0.1',
-                  'v2det_1x1/in_f1/const-in',
-                  'v2det_1x1/in_f1/local',
-                  'test',
-                  'test']
-
-    # TODO: gradient propagation study. Fix all the weights in convolution, let the network learn only the LRF_mlp.
-    #       NO orthonormalization los, see if we diverge, converge, improve or decrease results
-    #       Same WITH ortho loss
-
-    # TODO: No aumgent vs ROT augment: rot augment makes the network robust to pooling variations. But we can argue
-    #  that we align the shape before pooling which is easy to implement. Verify that N/R < R/R in the case pooling is
-    #  not aligned
-
-    # TODO: Aligned but not equivariant: Use a convolution to predict the lrf
-
-    # TODO: Combine lrf at multiple scale by adding lrf of next layer (Compute lrf at run time and compute it for
-    #       each layer)
-
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
-def ModelNet40_equivariant_6(old_result_limit):
-    """
-    Some first results here, we can see that cheat head (alignment of shapes by groundtruth instead of global pca) gets
-    better results.
-
-    Then we seem to have a slightlely better result when attached lrf (TO be confirmed)
-
-    Now new ablation study: what if we input constant LRF as input ? Does 2x2 perform better than 1x1?
-
-    """
-
-    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-07-18_22-53-35'
-    end = 'Log_2020-07-29_12-00-09'
-
-    if end < old_result_limit:
-        res_path = 'old_results'
-    else:
-        res_path = 'results'
-
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
-    logs = logs.astype('<U50')
-    logs = np.insert(logs, 0, join(res_path, 'Log_2020-07-11_22-16-11'))
-    logs = np.insert(logs, 1, join(res_path, 'Log_2020-07-11_22-17-37'))
-
-    logs = np.insert(logs, 10, join(res_path, 'Log_2020-07-29_12-07-14'))
-
-    # Give names to the logs (for legends)
-    logs_names = ['v2alldet_1x1/o=0.5/AR/eqhead',
-                  'v2det_1x1/o=0.5/AR/eqhead',
-                  'v2det_4x1/o=0.5/AR/eqhead',
-                  'v2alldet_4x1/o=0.5/AR/eqhead',
-                  'v2det_4x1/o=0.5/AR/normalhead',
-                  'v2alldet_4x1/o=0.5/AR/normalhead',
-                  'v2det_4x1/o=0.1/AR',
-                  'v2det_4x1/o=1.0/AR',
-                  'v2det_4x1/o=0.05/AR',
-                  'v2det_4x1/o=2.0/AR',
-                  'v2det_1x1/o=0.5/AR/normalhead',
-                  'test',
-                  'test']
-
-    # TODO: gradient propagation study. Fix all the weights in convolution, let the network learn only the LRF_mlp.
-    #       NO orthonormalization los, see if we diverge, converge, improve or decrease results
-    #       Same WITH ortho loss
-
-    # TODO: No aumgent vs ROT augment: rot augment makes the network robust to pooling variations. But we can argue
-    #  that we align the shape before pooling which is easy to implement. Verify that N/R < R/R in the case pooling is
-    #  not aligned
-
-    # TODO: Aligned but not equivariant: Use a convolution to predict the lrf
-
-    # TODO: Combine lrf at multiple scale by adding lrf of next layer (Compute lrf at run time and compute it for
-    #       each layer)
-
-
-    logs_names = np.array(logs_names[:len(logs)])
-
-    return logs, logs_names
-
-
 def Myhal_sim_1(old_result_limit):
-    """
-    """
 
     # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
-    start = 'Log_2020-10-05_20-55-52'
-    end = 'Log_2020-10-13_15-43-32'
+    start = 'Log_2021-01-27_18-53-05'
+    end = 'Log_2021-09-05_14-33-45'
 
     if end < old_result_limit:
         res_path = 'old_results'
     else:
         res_path = 'results'
 
-    logs = np.sort([join(res_path, l) for l in listdir(res_path) if start <= l <= end])
+    logs = np.sort([join(res_path, log) for log in listdir(res_path) if start <= log <= end])
     logs = logs.astype('<U50')
 
-    logs = np.insert(logs, 2, join(res_path, 'Log_2020-10-16_23-40-33'))
-    logs = np.insert(logs, 3, join(res_path, 'Log_2020-10-27_15-02-20'))
-
     # Give names to the logs (for legends)
-    logs_names = ['normal_test_1',
-                  'Round_1',
-                  'Round_2',
-                  'Round_3']
+    logs_names = ['fulltrain_indep_150',
+                  'fulltrain_shared_150',
+                  'pretrained_decay_150',
+                  'pretrained_decay_80',
+                  'mininet_decay_20',
+                  'mininet_decay_50', 
+                  'pretrained_shared_50', 
+                  'pretrained_indep_50',
+                  'fulltrain_shared_100', 
+                  ]
 
     logs_names = np.array(logs_names[:len(logs)])
 
@@ -2412,10 +1486,13 @@ if __name__ == '__main__':
     # Plot the validation
     if config.dataset_task == 'classification':
         compare_convergences_classif(logs, logs_names)
+
     elif config.dataset_task == 'normals_regression':
         compare_convergences_normals(logs, logs_names)
+
     elif 'part_segmentation' in config.dataset_task:
         compare_convergences_multisegment(logs, logs_names)
+
     elif config.dataset_task == 'cloud_segmentation':
         if config.dataset.startswith('S3DIS'):
             dataset = S3DISDataset(config, load_data=False)
@@ -2423,6 +1500,7 @@ if __name__ == '__main__':
         if config.dataset.startswith('ISPRS'):
             dataset = ISPRSDataset(config, load_data=False)
             compare_convergences_segment(dataset, logs, logs_names)
+
     elif config.dataset_task == 'slam_segmentation':
         if config.dataset == 'SemanticKitti':
             dataset = SemanticKittiDataset(config)
@@ -2433,6 +1511,13 @@ if __name__ == '__main__':
         elif config.dataset == 'MyhalSim':
             dataset = MyhalSimDataset(config, [], load_data=False)
             compare_convergences_SLAM(dataset, logs, logs_names)
+        elif config.dataset == 'MyhalSim':
+            dataset = MyhalSimDataset(config, [], load_data=False)
+            compare_convergences_SLAM(dataset, logs, logs_names)
+
+    elif config.dataset_task == 'collision_prediction':
+        if config.dataset.startswith('MyhalCollision'):
+            compare_convergences_collision2D(logs, logs_names)
     else:
         raise ValueError('Unsupported dataset : ' + plot_dataset)
 

@@ -57,6 +57,7 @@ from os.path import exists, join, isdir, getsize
 
 
 class MyhalCollisionSlam:
+    
     def __init__(self,
                  only_day_1=False,
                  first_day='',

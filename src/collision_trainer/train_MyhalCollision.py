@@ -70,7 +70,7 @@ class MyhalCollisionConfig(Config):
     dataset_task = ''
 
     # Number of CPU threads for the input pipeline
-    input_threads = 20
+    input_threads = 10
 
     #########################
     # Architecture definition
@@ -100,13 +100,13 @@ class MyhalCollisionConfig(Config):
     ######################
 
     # Number of propagating layer
-    n_2D_layers = 10
+    n_2D_layers = 30
 
     # Total time propagated
-    T_2D = 2.0
+    T_2D = 3.0
 
     # Size of 2D convolution grid
-    dl_2D = 0.15
+    dl_2D = 0.12
 
     # Power of the loss for the 2d predictions (use smaller prop loss when shared weights)
     power_2D_init_loss = 1.0
@@ -115,21 +115,22 @@ class MyhalCollisionConfig(Config):
 
     # Specification of the 2D networks composition
     init_2D_levels = 3
-    init_2D_resnets = 2
+    init_2D_resnets = 3
     prop_2D_resnets = 2
 
     # Path to a pretrained 3D network. if empty, ignore, if 'todo', then only train 3D part of the network.
-    pretrained_3D = 'Log_2021-01-27_18-53-05'
+    #pretrained_3D = 'Log_2021-01-27_18-53-05'
+    pretrained_3D = ''
 
     # Detach the 2D network from the 3D network when backpropagating gradient
-    detach_2D = True
+    detach_2D = False
 
     # Share weights for 2D network TODO: see if not sharing makes a difference
     shared_2D = True
 
     # Trainable backend 3D network
-    apply_3D_loss = False
-    frozen_layers = ['encoder_blocks', 'decoder_blocks', 'head_mlp', 'head_softmax']
+    apply_3D_loss = True
+    #frozen_layers = ['encoder_blocks', 'decoder_blocks', 'head_mlp', 'head_softmax']
 
     ###################
     # KPConv parameters
@@ -191,12 +192,12 @@ class MyhalCollisionConfig(Config):
     #####################
 
     # Maximal number of epochs
-    max_epoch = 800
+    max_epoch = 500
 
     # Learning rate management
     learning_rate = 1e-2
     momentum = 0.98
-    lr_decays = {i: 0.1 ** (1 / 80) for i in range(1, max_epoch)}
+    lr_decays = {i: 0.1 ** (1 / 100) for i in range(1, max_epoch)}
     grad_clip_norm = 100.0
 
     # Number of steps per epochs

@@ -8,6 +8,7 @@ notes.txt
 **/desktop.ini
 git_login.sh
 **/build/**
+/src/collision_trainer/results
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

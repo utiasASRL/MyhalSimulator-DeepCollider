@@ -196,7 +196,7 @@ class ModelTrainer:
 
                 # Check kill signal (running_PID.txt deleted)
                 if config.saving and not exists(PID_file):
-                    continue
+                    break
 
                 ##################
                 # Processing batch
