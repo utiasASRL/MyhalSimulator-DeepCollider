@@ -3268,7 +3268,7 @@ class MyhalCollisionDataset(PointCloudDataset):
             for s_ind, seq_frames in enumerate(self.frames):
                 self.val_confs.append(np.zeros((len(seq_frames), self.num_classes, self.num_classes)))
                 self.val_2D_reconstruct.append(np.ones((len(seq_frames), 3)))
-                self.val_2D_future.append(np.ones((len(seq_frames), self.config.n_2D_layers, 3)))
+                self.val_2D_future.append(np.ones((len(seq_frames), self.config.n_2D_layers)))
 
         return
 

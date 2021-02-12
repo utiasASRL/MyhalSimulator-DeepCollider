@@ -1170,14 +1170,14 @@ class KPCollider(nn.Module):
             self.prop_net = Propagation2DBlock(config.first_features_dim, config.first_features_dim, n_blocks=config.prop_2D_resnets)
 
             # Shared head softmax
-            self.head_softmax_2D = nn.Conv2d(config.first_features_dim, 3, kernel_size=1, bias=True)
+            self.head_softmax_2D = nn.Conv2d(config.first_features_dim, 1, kernel_size=1, bias=True)
 
         else:
             self.prop_net = nn.ModuleList()
             self.head_softmax_2D = nn.ModuleList()
             for i in range(config.n_2D_layers):
                 self.prop_net.append(Propagation2DBlock(config.first_features_dim, config.first_features_dim, n_blocks=config.prop_2D_resnets))
-                self.head_softmax_2D.append(nn.Conv2d(config.first_features_dim, 3, kernel_size=1, bias=True))
+                self.head_softmax_2D.append(nn.Conv2d(config.first_features_dim, 1, kernel_size=1, bias=True))
 
 
         ################
@@ -1308,9 +1308,13 @@ class KPCollider(nn.Module):
             x_2D = self.initial_net(x_2D)
             
             # Initial preds
-            preds_2D = [self.init_softmax_2D(x_2D), self.merge_softmax_2D(x_2D)]
+            preds_init_2D = [self.init_softmax_2D(x_2D), self.merge_softmax_2D(x_2D)]
+            
+            # Stack 2d outputs and permute dimension to get the shape: [B, 2, L_2D, L_2D, 3]
+            preds_init_2D = torch.stack(preds_init_2D, axis=2).permute(0, 2, 3, 4, 1)
 
-            # Append propagated preds
+            # Propagated preds
+            preds_2D = []
             if self.shared_2D:
                 for i in range(config.n_2D_layers):
                     x_2D = self.prop_net(x_2D)
@@ -1320,8 +1324,8 @@ class KPCollider(nn.Module):
                     x_2D = self.prop_net[i](x_2D)
                     preds_2D.append(self.head_softmax_2D[i](x_2D))
 
-            # Stack 2d outputs should have the shape: [B, 3, T_2D+2, L_2D, L_2D]
-            preds_2D = torch.stack(preds_2D, axis=2)
+            # Stack 2d outputs and permute dimension to get the shape: [B, 2, L_2D, L_2D, 1]
+            preds_2D = torch.stack(preds_2D, axis=2).permute(0, 2, 3, 4, 1)
 
         ##############
         # Head Network
@@ -1335,7 +1339,7 @@ class KPCollider(nn.Module):
             x = self.head_mlp(x, batch)
             preds_3D = self.head_softmax(x, batch)
 
-        return preds_3D, preds_2D.permute(0, 2, 3, 4, 1)
+        return preds_3D, preds_init_2D, preds_2D
 
     def loss(self, outputs, batch):
         """
@@ -1346,8 +1350,7 @@ class KPCollider(nn.Module):
         """
 
         # Parse network outputs:
-        outputs_3D = outputs[0]
-        outputs_2D = outputs[1]
+        outputs_3D, preds_init_2D, preds_2D = outputs
 
         #########
         # 3D Loss
@@ -1383,13 +1386,13 @@ class KPCollider(nn.Module):
             # Only apply loss to part of the empyty space to reduce unbalanced classes
 
             # Init loss for initial class probablitities => shapes = [B, 1, L_2D, L_2D, 3]
-            init_2D_loss = self.power_2D_init_loss * self.criterion_2D(outputs_2D[:, 0, :, :, :], batch.future_2D[:, 0, :, :, :])
+            self.init_2D_loss = self.power_2D_init_loss * self.criterion_2D(preds_init_2D[:, 0, :, :, :], batch.future_2D[:, 0, :, :, :])
 
             # Init loss for merged future class probablitities => shapes = [B, 1, L_2D, L_2D, 3]
             merged_future = batch.future_2D[:, 0, :, :, :].detach().clone()
             max_v, _ = torch.max(batch.future_2D[:, 1:, :, :, 2], dim=1)
             merged_future[:, :, :, 2] = max_v
-            init_2D_loss += self.power_2D_init_loss * self.criterion_2D(outputs_2D[:, 1, :, :, :], merged_future)
+            self.init_2D_loss += self.power_2D_init_loss * self.criterion_2D(preds_init_2D[:, 1, :, :, :], merged_future)
             
 
             # Propagation loss applied to each prop layer => shapes = [B, T_2D, L_2D, L_2D, 3]
@@ -1403,15 +1406,15 @@ class KPCollider(nn.Module):
             dilated_inds = dilated_gt > 0.01
 
             # Add some random negative inds
-            future_p = outputs_2D[:, 2:, :, :, 2]
+            future_p = preds_2D[:, :, :, :, 0]
             loss_mask = torch.rand_like(future_p)
             loss_mask[dilated_inds] = 1.0
             threshold = min(1.0 - ratio_pos * self.neg_pos_ratio, 0.9)
             loss_mask = loss_mask > threshold
-            prop_2D_loss = self.power_2D_prop_loss * self.criterion_2D(future_p[loss_mask], future_gt[loss_mask])
+            self.prop_2D_loss = self.power_2D_prop_loss * self.criterion_2D(future_p[loss_mask], future_gt[loss_mask])
 
             # Sum the two 2D losses
-            self.output_2D_loss = init_2D_loss + prop_2D_loss
+            self.output_2D_loss = self.init_2D_loss + self.prop_2D_loss
 
 
         ######
@@ -1439,8 +1442,7 @@ class KPCollider(nn.Module):
         """
 
         # Parse network outputs:
-        outputs_3D = outputs[0]
-        outputs_2D = outputs[1]
+        outputs_3D, preds_init_2D, preds_2D = outputs
 
         # Set all ignored labels to -1 and correct the other label to be in [0, C-1] range
         target = - torch.ones_like(batch.labels)

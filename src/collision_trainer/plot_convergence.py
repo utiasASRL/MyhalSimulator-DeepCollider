@@ -145,6 +145,8 @@ def load_training_results(path):
     L_p = []
     acc = []
     t = []
+    L_2D_init = []
+    L_2D_prop = []
     for line in lines[1:]:
         line_info = line.split()
         if (len(line) > 0):
@@ -154,10 +156,21 @@ def load_training_results(path):
             L_p += [float(line_info[3])]
             acc += [float(line_info[4])]
             t += [float(line_info[5])]
+            if len(line_info) > 6:
+                L_2D_init += [float(line_info[6])]
+                L_2D_prop += [float(line_info[7])]
+
         else:
             break
 
-    return epochs, steps, L_out, L_p, acc, t
+    ret_list = [epochs, steps, L_out, L_p, acc, t]
+
+    if L_2D_init:
+        ret_list.append(L_2D_init)
+    if L_2D_prop:
+        ret_list.append(L_2D_prop)
+
+    return ret_list
 
 
 def load_single_IoU(filename, n_parts):
@@ -297,6 +310,8 @@ def compare_trainings(list_of_paths, list_of_labels=None):
 
     all_epochs = []
     all_loss = []
+    all_loss2 = []
+    all_loss3 = []
     all_lr = []
     all_times = []
     all_RAMs = []
@@ -316,7 +331,14 @@ def compare_trainings(list_of_paths, list_of_labels=None):
 
 
         # Load results
-        epochs, steps, L_out, L_p, acc, t = load_training_results(path)
+        training_res_list = load_training_results(path)
+        if len(training_res_list) > 6:
+            epochs, steps, L_out, L_p, acc, t, L_2D_init, L_2D_prop = training_res_list
+        else:
+            epochs, steps, L_out, L_p, acc, t = training_res_list
+            L_2D_init = []
+            L_2D_prop = []
+
         epochs = np.array(epochs, dtype=np.int32)
         epochs_d = np.array(epochs, dtype=np.float32)
         steps = np.array(steps, dtype=np.float32)
@@ -333,6 +355,9 @@ def compare_trainings(list_of_paths, list_of_labels=None):
         smooth_n = int(np.mean(epoch_n) * smooth_epochs)
         smooth_loss = running_mean(L_out, smooth_n, stride=stride)
         all_loss += [smooth_loss]
+        if L_2D_init:
+            all_loss2 += [running_mean(L_2D_init, smooth_n, stride=stride)]
+            all_loss3 += [running_mean(L_2D_prop, smooth_n, stride=stride)]
         all_epochs += [epochs_d[smooth_n:-smooth_n:stride]]
         all_times += [t[smooth_n:-smooth_n:stride]]
 
@@ -372,24 +397,53 @@ def compare_trainings(list_of_paths, list_of_labels=None):
     # Plots loss
     # **********
 
-    # Figure
-    fig = plt.figure('loss')
-    for i, label in enumerate(list_of_labels):
-        plt.plot(all_epochs[i], all_loss[i], linewidth=1, label=label)
+    if all_loss2:
 
-    # Set names for axes
-    plt.xlabel('epochs')
-    plt.ylabel('loss')
-    plt.yscale('log')
+        fig, axes = plt.subplots(1, 3, sharey=True, figsize=(12, 5))
+        
+        for i, label in enumerate(list_of_labels):
+            axes[0].plot(all_epochs[i], all_loss[i] - all_loss2[i] - all_loss3[i], linewidth=1, label=label)
+            axes[1].plot(all_epochs[i], all_loss2[i], linewidth=1, label=label)
+            axes[2].plot(all_epochs[i], all_loss3[i], linewidth=1, label=label)
 
-    # Display legends and title
-    plt.legend(loc=1)
-    plt.title('Losses compare')
+        # Set names for axes
+        for ax in axes:
+            ax.set_xlabel('epochs')
+        axes[0].set_ylabel('loss')
+        axes[0].set_yscale('log')
 
-    # Customize the graph
-    ax = fig.gca()
-    ax.grid(linestyle='-.', which='both')
-    # ax.set_yticks(np.arange(0.8, 1.02, 0.02))
+        # Display legends and title
+        axes[2].legend(loc=1)
+        axes[0].set_title('3D_net loss')
+        axes[1].set_title('2D_init loss')
+        axes[2].set_title('2D_prop loss')
+
+        # Customize the graph
+        for ax in axes:
+            ax.grid(linestyle='-.', which='both')
+
+
+
+    else:
+
+        # Figure
+        fig = plt.figure('loss')
+        for i, label in enumerate(list_of_labels):
+            plt.plot(all_epochs[i], all_loss[i], linewidth=1, label=label)
+
+        # Set names for axes
+        plt.xlabel('epochs')
+        plt.ylabel('loss')
+        plt.yscale('log')
+
+        # Display legends and title
+        plt.legend(loc=1)
+        plt.title('Losses compare')
+
+        # Customize the graph
+        ax = fig.gca()
+        ax.grid(linestyle='-.', which='both')
+        # ax.set_yticks(np.arange(0.8, 1.02, 0.02))
 
     # Plot Times
     # **********
@@ -1443,6 +1497,35 @@ def Myhal_sim_1(old_result_limit):
     return logs, logs_names
 
 
+def Myhal_sim_2(old_result_limit):
+    """
+    New experiments from the point where the validation function was modified.
+    First we experiment a little with lr decay 
+    """
+
+    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
+    start = 'Log_2021-02-11_12-19-25'
+    end = 'Log_2021-09-05_14-33-45'
+
+    if end < old_result_limit:
+        res_path = 'old_results'
+    else:
+        res_path = 'results'
+
+    logs = np.sort([join(res_path, log) for log in listdir(res_path) if start <= log <= end])
+    logs = logs.astype('<U50')
+
+    # Give names to the logs (for legends)
+    logs_names = ['fulltrain_indep_100',
+                  'fulltrain_indep_70',
+                  'fulltrain_indep_150',
+                  ]
+
+    logs_names = np.array(logs_names[:len(logs)])
+
+    return logs, logs_names
+
+
 
 if __name__ == '__main__':
 
@@ -1454,7 +1537,7 @@ if __name__ == '__main__':
     old_res_lim = 'Log_2020-05-04_19-17-59'
 
     # My logs: choose the logs to show
-    logs, logs_names = Myhal_sim_1(old_res_lim)
+    logs, logs_names = Myhal_sim_2(old_res_lim)
     #os.environ['QT_DEBUG_PLUGINS'] = '1'
 
 

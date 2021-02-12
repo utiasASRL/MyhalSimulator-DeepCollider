@@ -318,13 +318,16 @@ class ModelTrainer:
                 # Log file
                 if config.saving:
                     with open(join(config.saving_path, 'training.txt'), "a") as file:
-                        message = '{:d} {:d} {:.3f} {:.3f} {:.3f} {:.3f}\n'
-                        file.write(message.format(self.epoch,
-                                                  self.step,
-                                                  net.output_loss,
-                                                  net.reg_loss,
-                                                  acc,
-                                                  t[-1] - t0))
+                        message = '{:d} {:d} {:.3f} {:.3f} {:.3f} {:.3f}'
+                        values = [self.epoch, self.step, net.output_loss, net.reg_loss, acc, t[-1] - t0]
+                        if hasattr(net, 'init_2D_loss'):
+                            values += [net.init_2D_loss]
+                            message += ' {:.3f}'
+                        if hasattr(net, 'prop_2D_loss'):
+                            values += [net.prop_2D_loss]
+                            message += ' {:.3f}'
+                        message += '\n'
+                        file.write(message.format(*values))
 
 
                 self.step += 1
@@ -1380,6 +1383,8 @@ class ModelTrainer:
             makedirs(join(config.saving_path, 'val_preds'))
         if not exists(join(config.saving_path, 'future_preds')):
             makedirs(join(config.saving_path, 'future_preds'))
+        if not exists(join(config.saving_path, 'future_visu')):
+            makedirs(join(config.saving_path, 'future_visu'))
 
         # initiate the dataset validation containers
         val_loader.dataset.val_points = []
@@ -1418,7 +1423,7 @@ class ModelTrainer:
                 batch.to(self.device)
 
             # Forward pass
-            outputs, outputs_2D = net(batch, config)
+            outputs, preds_init_2D, preds_2D = net(batch, config)
 
 
             # Get probs and labels
@@ -1429,7 +1434,8 @@ class ModelTrainer:
             r_mask_list = batch.reproj_masks
             labels_list = batch.val_labels
             sigmoid_2D = nn.Sigmoid()
-            stck_future_preds = sigmoid_2D(outputs_2D).cpu().detach().numpy()
+            stck_init_preds = sigmoid_2D(preds_init_2D).cpu().detach().numpy()
+            stck_future_preds = sigmoid_2D(preds_2D).cpu().detach().numpy()
             stck_future_gts = batch.future_2D.cpu().detach().numpy()
             torch.cuda.synchronize(self.device)
 
@@ -1470,37 +1476,60 @@ class ModelTrainer:
                 else:
                     frame_preds = np.zeros(frame_labels.shape, dtype=np.uint8)
                 frame_preds[proj_mask] = preds.astype(np.uint8)
-                np.save(filepath, frame_preds)
+                #np.save(filepath, frame_preds)
 
-                # Get the 2D predictions and gt
-                img0 = stck_future_preds[b_i, 0, :, :, :]
+                # Get the 2D predictions and gt (init_2D)
+                img0 = stck_init_preds[b_i, 0, :, :, :]
                 gt_im0 = np.copy(stck_future_gts[b_i, 0, :, :, :])
                 gt_im1 = stck_future_gts[b_i, 0, :, :, :]
                 gt_im1[:, :, 2] = np.max(stck_future_gts[b_i, 1:, :, :, 2], axis=0)
-                img1 = stck_future_preds[b_i, 1, :, :, :]
-                img = stck_future_preds[b_i, 2:, :, :, :]
+                img1 = stck_init_preds[b_i, 1, :, :, :]
+
+                
+                # Get the 2D predictions and gt (prop_2D)
+                img = stck_future_preds[b_i, :, :, :, :]
                 gt_im = stck_future_gts[b_i, 1:, :, :, :]
+
+                # Add walls and obstacles for visu purposes
+                img = np.tile(img, (1, 1, 1, 3))
                 img[:, :, :, :2] = np.expand_dims(img0[:, :, :2], 0)
 
-                # Get a measure of the 2D performances
+                # Save future gt and preds in binary file to show any metrics afterwards
+                filepath = join(config.saving_path, 'future_preds', filename)
+                f_gt = (gt_im[:, :, :, 2] * 255).astype(np.uint8)
+                f_pre = (img[:, :, :, 2] * 255).astype(np.uint8)
+                f_all = np.stack((f_gt, f_pre))
+                np.save(filepath, f_all)
+
+
+                # Average future errors only on the positive pixels (ignore true negatives)
+                future_errors = []
+                for fut_t in range(gt_im.shape[0]):
+                    positive_mask = gt_im[fut_t, :, :, 2] + img[fut_t, :, :, 2] > 0.1
+                    future_e = np.abs(gt_im[fut_t, :, :, 2] - img[fut_t, :, :, 2])
+                    future_e = np.mean(future_e[positive_mask])
+                    future_errors.append(future_e)
+                future_errors = np.array(future_errors)
+                val_loader.dataset.val_2D_future[s_ind][f_ind] = future_errors
+                all_future_errors.append(future_errors)
+
+                # Get a measure of the 2D performances (init_2D)
                 reconstruction_errors = np.mean(np.abs(img0 - gt_im0), axis=(0, 1))
                 merging_errors = np.mean(np.abs(img1 - gt_im1), axis=(0, 1))
-                future_errors = np.mean(np.abs(img - gt_im), axis=(1, 2))
                 val_loader.dataset.val_2D_reconstruct[s_ind][f_ind] = reconstruction_errors
-                val_loader.dataset.val_2D_future[s_ind][f_ind] = future_errors
                 all_reconstruction_errors.append(reconstruction_errors)
                 all_merging_errors.append(merging_errors)
-                all_future_errors.append(future_errors)
 
                 # Save some of the frame pots
                 if f_ind % 50 == 0:
+                    filepath = join(config.saving_path, 'val_preds', filename)
                     frame_points = val_loader.dataset.load_points(s_ind, f_ind)
                     write_ply(filepath[:-4] + '_pots.ply',
                               [frame_points[:, :3], frame_labels, frame_preds],
                               ['x', 'y', 'z', 'gt', 'pre'])
 
                     # Save prediction too in gif format
-                    gifpath = join(config.saving_path, 'future_preds', filename)
+                    gifpath = join(config.saving_path, 'future_visu', filename)
                     fast_save_future_anim(gifpath[:-4] + '_f_gt.gif', gt_im, zoom=5, correction=True)
                     fast_save_future_anim(gifpath[:-4] + '_f_pre.gif', img, zoom=5, correction=True)
                     save_zoom_img(gifpath[:-4] + '_0_gt.png', gt_im0, zoom=5, correction=True)
@@ -1578,7 +1607,7 @@ class ModelTrainer:
         # Mean 2D errors
         mean_recons_e = 100 * np.mean(np.stack(all_reconstruction_errors, axis=0), axis=0)
         mean_merge_e = 100 * np.mean(np.stack(all_merging_errors, axis=0), axis=0)
-        mean_future_e = 100 * np.mean(np.stack(all_future_errors, axis=0), axis=0)[:, 2]
+        mean_future_e = 100 * np.mean(np.stack(all_future_errors, axis=0), axis=0)
 
 
         #####################################
