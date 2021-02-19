@@ -1221,8 +1221,6 @@ def compare_convergences_collision2D(list_of_paths, list_of_names=None):
     config = Config()
     config.load(list_of_paths[0])
     
-
-
     for path in list_of_paths:
 
         # Load config and saved results
@@ -1237,8 +1235,6 @@ def compare_convergences_collision2D(list_of_paths, list_of_names=None):
         all_mean_fe += [running_mean(np.mean(future_errors, axis=1), smooth_n)]
         all_last_fe += [running_mean(future_errors[:, -1], smooth_n)]
 
-        
-    
 
     # Plots
     # *****
@@ -1286,9 +1282,6 @@ def compare_convergences_collision2D(list_of_paths, list_of_names=None):
 
 
     for path in list_of_paths:
-
-        # TODO: SAVE more than right now and find better visualization
-
 
         # Load or compute the gif results
         folder_stats_file = join(path, 'log_stats_{:d}.pkl'.format(max_epoch))

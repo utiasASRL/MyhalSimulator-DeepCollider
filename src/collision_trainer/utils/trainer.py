@@ -1507,7 +1507,11 @@ class ModelTrainer:
                 for fut_t in range(gt_im.shape[0]):
                     positive_mask = gt_im[fut_t, :, :, 2] + img[fut_t, :, :, 2] > 0.1
                     future_e = np.abs(gt_im[fut_t, :, :, 2] - img[fut_t, :, :, 2])
-                    future_e = np.mean(future_e[positive_mask])
+
+                    if (np.sum(positive_mask.astype(np.int32)) > 0):
+                        future_e = np.mean(future_e[positive_mask])
+                    else:
+                        future_e = 0
                     future_errors.append(future_e)
                 future_errors = np.array(future_errors)
                 val_loader.dataset.val_2D_future[s_ind][f_ind] = future_errors
@@ -1608,7 +1612,6 @@ class ModelTrainer:
         mean_recons_e = 100 * np.mean(np.stack(all_reconstruction_errors, axis=0), axis=0)
         mean_merge_e = 100 * np.mean(np.stack(all_merging_errors, axis=0), axis=0)
         mean_future_e = 100 * np.mean(np.stack(all_future_errors, axis=0), axis=0)
-
 
         #####################################
         # Results on the whole validation set

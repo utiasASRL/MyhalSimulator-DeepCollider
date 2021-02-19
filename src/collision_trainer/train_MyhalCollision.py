@@ -197,7 +197,7 @@ class MyhalCollisionConfig(Config):
     # Learning rate management
     learning_rate = 1e-2
     momentum = 0.98
-    lr_decays = {i: 0.1 ** (1 / 200) for i in range(1, max_epoch)}
+    lr_decays = {i: 0.1 ** (1 / 100) for i in range(1, max_epoch)}
     grad_clip_norm = 100.0
 
     # Number of steps per epochs
