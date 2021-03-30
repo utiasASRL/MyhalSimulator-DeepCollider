@@ -144,6 +144,7 @@ def ray_casting_annot(frame_names,
                       theta_dl=0.5 * 1.29 * np.pi / 180,
                       phi_dl=0.2 * 1.29 * np.pi / 180,
                       map_dl=0.1,
+                      verbose_time=5.0,
                       motion_distortion=False):
     """
     :param frame_points: (N1, 3) points of the slice or frame
@@ -166,7 +167,8 @@ def ray_casting_annot(frame_names,
                                                                       H_frames=H_frames,
                                                                       map_dl=map_dl,
                                                                       theta_dl=theta_dl,
-                                                                      phi_dl=phi_dl)
+                                                                      phi_dl=phi_dl,
+                                                                      verbose_time=verbose_time)
                                                                       #motion_distortion=motion_distortion)
 
     return movable_prob, movable_count
@@ -184,6 +186,7 @@ def slam_on_sim_sequence(f_names,
                          frame_voxel_size=0.1,
                          motion_distortion=False,
                          filtering=False,
+                         verbose_time=5.0,
                          icp_samples=400,
                          icp_pairing_dist=2.0,
                          icp_planar_dist=0.3,
@@ -218,6 +221,7 @@ def slam_on_sim_sequence(f_names,
                                            frame_voxel_size=frame_voxel_size,
                                            motion_distortion=motion_distortion,
                                            filtering=filtering,
+                                           verbose_time=verbose_time,
                                            icp_samples=icp_samples,
                                            icp_pairing_dist=icp_pairing_dist,
                                            icp_planar_dist=icp_planar_dist,

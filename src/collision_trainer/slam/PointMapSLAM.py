@@ -1918,7 +1918,15 @@ def annotation_process(dataset,
         # Verify which frames we need:
         frame_names = []
         f_name_i = 0
+        last_t = map_t[0] - 0.1
+        remove_inds = []
         for i, t in enumerate(map_t):
+            
+            # Handle cases were we have two identical timestamps in map_t
+            if np.abs(t - last_t) < 0.01:
+                remove_inds.append(i)
+                continue
+            last_t = t
 
             f_name = '{:.6f}.ply'.format(t)
             while f_name_i < len(f_names) and not (f_names[f_name_i].endswith(f_name)):
@@ -1931,6 +1939,10 @@ def annotation_process(dataset,
             frame_names.append(f_names[f_name_i])
             f_name_i += 1
 
+        # Remove the double inds form map_t and map_H
+        map_t = np.delete(map_t, remove_inds, axis=0)
+        map_H = np.delete(map_H, remove_inds, axis=0)
+
         #########################
         # Step 2: Frame alignment
         #########################
@@ -1939,7 +1951,7 @@ def annotation_process(dataset,
         cpp_map_name = join(out_folder, 'map_{:s}.ply'.format(day))
         cpp_traj_name = join(out_folder, 'correct_traj_{:s}.pkl'.format(day))
         # Always redo because map might have changed
-        if False or not exists(cpp_traj_name):
+        if not exists(cpp_traj_name):
 
             # Align on map and add the points of this day
             # (Do not perform ICP to correct pose as it is already supposed to be good)
@@ -1993,7 +2005,7 @@ def annotation_process(dataset,
         if exists(old_movable_name):
             rename(old_movable_name, movable_name)
 
-        if False or not exists(movable_name):
+        if not exists(movable_name):
 
             # Get short term movables
             movable_prob, movable_count = ray_casting_annot(frame_names, day_points, day_normals, correct_H,
@@ -2026,7 +2038,7 @@ def annotation_process(dataset,
         #   4 : "shortT"
 
         annot_name = join(out_folder, 'annotated_{:s}.ply'.format(day))
-        if False or not exists(annot_name):
+        if not exists(annot_name):
 
             categories = np.zeros(movable_prob.shape, dtype=np.int32)
             categories[movable_prob > short_threshold] = 4
@@ -2068,11 +2080,14 @@ def annotation_process(dataset,
         print('Reprojection of map day {:s}'.format(day))
         map_tree = None
         N = len(frame_names)
+        last_t = time.time()
+        fps = 0
+        fps_regu = 0.9
         for i, f_name in enumerate(frame_names):
 
             # Check if we already did reprojection (Always redo because map might have change)
             ply_name = join(annot_folder, f_name.split('/')[-1])
-            if True and exists(ply_name):
+            if exists(ply_name):
                 continue
             elif map_tree is None:
                 map_tree = KDTree(day_points)
@@ -2100,11 +2115,12 @@ def annotation_process(dataset,
                       ['x', 'y', 'z', 'classif', 'labels'])
 
             t += [time.time()]
-            dt = 1000 * (t[-1] - t[0])
-            print('Reproj {:s} {:3d}  --- {:5.1f}%   {:6.1f} ms'.format(day,
-                                                                        i + 1,
-                                                                        100 * (i + 1) / N,
-                                                                        dt))
+            fps = fps_regu * fps + (1.0 - fps_regu) / (t[-1] - t[0])
+            if (t[-1] - last_t > 5.0):
+                print('Reproj {:s} {:5d} --- {:5.1f}%% at {:.1f} fps'.format(day,
+                                                                            i + 1,
+                                                                            100 * (i + 1) / N,
+                                                                            fps))
         print('OK')
 
 

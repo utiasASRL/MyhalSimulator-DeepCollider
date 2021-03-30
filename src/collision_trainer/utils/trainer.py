@@ -1491,8 +1491,8 @@ class ModelTrainer:
                 gt_im = stck_future_gts[b_i, 1:, :, :, :]
 
                 # Add walls and obstacles for visu purposes
-                img = np.tile(img, (1, 1, 1, 3))
-                img[:, :, :, :2] = np.expand_dims(img0[:, :, :2], 0)
+                #img = np.tile(img, (1, 1, 1, 3))
+                #img[:, :, :, :2] = np.expand_dims(img0[:, :, :2], 0)
 
                 # Save future gt and preds in binary file to show any metrics afterwards
                 filepath = join(config.saving_path, 'future_preds', filename)

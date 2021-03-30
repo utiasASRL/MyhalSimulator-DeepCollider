@@ -1776,7 +1776,15 @@ class MyhalCollisionSlam:
             # Verify which frames we need:
             frame_names = []
             f_name_i = 0
+            last_t = map_t[0] - 0.1
+            remove_inds = []
             for i, t in enumerate(map_t):
+            
+                # Handle cases were we have two identical timestamps in map_t
+                if np.abs(t - last_t) < 0.01:
+                    remove_inds.append(i)
+                    continue
+                last_t = t
 
                 f_name = '{:.6f}.ply'.format(t)
                 while f_name_i < len(f_names) and not (
@@ -1789,6 +1797,10 @@ class MyhalCollisionSlam:
 
                 frame_names.append(f_names[f_name_i])
                 f_name_i += 1
+
+            # Remove the double inds form map_t and map_H
+            map_t = np.delete(map_t, remove_inds, axis=0)
+            map_H = np.delete(map_H, remove_inds, axis=0)
 
             # Get short term movables
             movable_prob, movable_count = ray_casting_annot(
@@ -1864,11 +1876,19 @@ class MyhalCollisionSlam:
         # Verify which frames we need:
         frame_names = []
         f_name_i = 0
+        last_t = map_t[0] - 0.1
+        remove_inds = []
         for i, t in enumerate(map_t):
+        
+            # Handle cases were we have two identical timestamps in map_t
+            if np.abs(t - last_t) < 0.01:
+                remove_inds.append(i)
+                continue
+            last_t = t
 
+            # Skip ply frames that are not present in the timestamps of map_t
             f_name = '{:.6f}.ply'.format(t)
-            while f_name_i < len(self.map_f_names) and not (
-                    self.map_f_names[f_name_i].endswith(f_name)):
+            while f_name_i < len(self.map_f_names) and not (self.map_f_names[f_name_i].endswith(f_name)):
                 f_name_i += 1
 
             if f_name_i >= len(self.map_f_names):
@@ -1876,6 +1896,10 @@ class MyhalCollisionSlam:
 
             frame_names.append(self.map_f_names[f_name_i])
             f_name_i += 1
+            
+        # Remove the double inds form map_t and map_H
+        map_t = np.delete(map_t, remove_inds, axis=0)
+        map_H = np.delete(map_H, remove_inds, axis=0)
 
         print('OK')
 
@@ -1960,6 +1984,9 @@ class MyhalCollisionSlam:
         map_tree = None
         N = len(frame_names)
         new_frame_names = []
+        last_t = time.time()
+        fps = 0
+        fps_regu = 0.9
         for i, f_name in enumerate(frame_names):
 
             # Check if we already did reprojection
@@ -1981,19 +2008,23 @@ class MyhalCollisionSlam:
                                   map_H[i].T).astype(np.float32)[:, :3]
 
             # Get closest map points
-            neighb_inds = np.squeeze(
-                map_tree.query(world_pts, return_distance=False))
+            neighb_inds = np.squeeze(map_tree.query(world_pts, return_distance=False))
             frame_movable_prob = movable_prob[neighb_inds]
 
             # Save frame with annotation
             categories = np.zeros(frame_movable_prob.shape, np.int32)
             categories[frame_movable_prob > 0.7] = 4
-            write_ply(new_f_name, [points, categories], ['x', 'y', 'z', 'cat'])
+            write_ply(new_f_name, [world_pts, categories], ['x', 'y', 'z', 'cat'])
 
             t += [time.time()]
-            dt = 1000 * (t[-1] - t[0])
-            print('Reproj {:s} {:3d}  --- {:5.1f}%   {:6.1f} ms'.format(
-                self.map_day, i + 1, 100 * (i + 1) / N, dt))
+            fps = fps_regu * fps + (1.0 - fps_regu) / (t[-1] - t[0])
+
+            if (t[-1] - last_t > 5.0):
+                print('Reproj {:s} {:5d} --- {:5.1f}%% at {:.1f} fps'.format(self.map_day,
+                                                                            i + 1,
+                                                                            100 * (i + 1) / N,
+                                                                            fps))
+                last_t = t[-1]
         print('OK')
 
         ###########################################
@@ -2127,6 +2158,7 @@ class MyhalCollisionSlam:
                                              frame_voxel_size=3 * map_dl,
                                              motion_distortion=False,
                                              filtering=True,
+                                             verbose_time=5,
                                              icp_samples=600,
                                              icp_pairing_dist=2.0,
                                              icp_planar_dist=0.3,
@@ -2195,7 +2227,7 @@ class MyhalCollisionSlam:
 
         return
 
-    def collision_annotation(self, dl_2D=0.03, future_T=3.0, input_frame_n=3):
+    def collision_annotation(self, dl_2D=0.03, future_T=5.0, input_frame_n=3):
 
         # Here we are testing things for now. Annotate future of points in all the scene
         # For the specific collision annotation, define a radius of interference
@@ -2211,15 +2243,14 @@ class MyhalCollisionSlam:
                        3: 'longT',
                        4: 'shortT'}
 
-
-
-
-
         ##############
         # LOOP ON DAYS
         ##############
 
         print(self.days)
+        fps = 0
+        fps_regu = 0.9
+        last_t = time.time()
 
         # Get remove point form each day independently
         # Otherwise if a table is there in only one day, it will not be removed.
@@ -2247,7 +2278,15 @@ class MyhalCollisionSlam:
             # Verify which frames we need:
             frame_names = []
             f_name_i = 0
+            last_t = map_t[0] - 0.1
+            remove_inds = []
             for i, t in enumerate(map_t):
+            
+                # Handle cases were we have two identical timestamps in map_t
+                if np.abs(t - last_t) < 0.01:
+                    remove_inds.append(i)
+                    continue
+                last_t = t
 
                 f_name = '{:.6f}.ply'.format(t)
                 while f_name_i < len(f_names) and not (
@@ -2260,6 +2299,10 @@ class MyhalCollisionSlam:
 
                 frame_names.append(f_names[f_name_i])
                 f_name_i += 1
+
+            # Remove the double inds form map_t and map_H
+            map_t = np.delete(map_t, remove_inds, axis=0)
+            map_H = np.delete(map_H, remove_inds, axis=0)
 
             # Load the annotated map
             annot_name = join(annot_folder, 'annotated_{:s}.ply'.format(day))
@@ -2277,6 +2320,7 @@ class MyhalCollisionSlam:
             # Step 3: Collisions per frame
             ##############################
 
+            input_FIFO = []
             pts_FIFO = []
             annot_FIFO = []
             name_FIFO = []
@@ -2288,19 +2332,16 @@ class MyhalCollisionSlam:
 
                 t = [time.time()]
 
-                # Check if we already did reprojection (Always redo because map might have change)
-                ply_name = join(frame_folder, f_name.split('/')[-1])
 
                 # Load points with annotation
+                ply_name = join(frame_folder, f_name.split('/')[-1])
                 data = read_ply(ply_name)
                 f_points = np.vstack((data['x'], data['y'], data['z'])).T
                 f_annot = data['classif']
 
                 # Apply transf
-                world_pts = np.hstack(
-                    (f_points, np.ones_like(f_points[:, :1])))
-                world_pts = np.matmul(
-                    world_pts, correct_H[i].T).astype(np.float32)[:, :3]
+                world_pts = np.hstack((f_points, np.ones_like(f_points[:, :1])))
+                world_pts = np.matmul(world_pts, correct_H[i].T).astype(np.float32)[:, :3]
 
                 # Do not use ground and uncertain points
                 flat_pts = world_pts[f_annot > 1.5, :]
@@ -2351,10 +2392,14 @@ class MyhalCollisionSlam:
 
                 # Timing
                 t += [time.time()]
-                dt = 1000 * (t[-1] - t[0])
-                print(
-                    'Collisions {:s} {:3d}  --- {:5.1f}%   {:6.1f} ms'.format(
-                        day, i + 1, 100 * (i + 1) / N, dt))
+                fps = fps_regu * fps + (1.0 - fps_regu) / (t[-1] - t[0])
+
+                if (t[-1] - last_t > 5.0):
+                    print('Collisions {:s} {:5d} --- {:5.1f}%% at {:.1f} fps'.format(day,
+                                                                                     i + 1,
+                                                                                     100 * (i + 1) / N,
+                                                                                     fps))
+                    last_t = t[-1]
 
         print('OK')
         return
@@ -2858,7 +2903,7 @@ class MyhalCollisionDataset(PointCloudDataset):
                 debug = self.config.input_threads == 0
                 if debug:
                     print('Precesnce of each input class: ', input_classes)
-                    debug = debug and np.all(input_classes) and s_ind < 6
+                    debug = debug and np.all(input_classes) and 4 < s_ind < 8
                 if debug:
                     f1 = np.zeros_like(support_pts[:, 0])
                     f1 = np.hstack((f1, np.zeros_like(f1[:1])))
@@ -2867,14 +2912,19 @@ class MyhalCollisionDataset(PointCloudDataset):
                     for rd_i in rand_neighbs:
                         f1[pool_inds[rd_i]] = rd_i
 
+                    print(support_pts.shape, f1.shape, in_fts.shape, in_lbls.shape)
                     write_ply('results/t_supps.ply',
                               [support_pts, f1[:-1], in_fts[:, -1], in_lbls],
                               ['x', 'y', 'z', 'f1', 'f2', 'classif'])
+
+                              
+                    print(in_pts.shape, f1.shape, in_fts.shape, in_lbls.shape)
                     write_ply('results/t_supps3D.ply',
                               [in_pts, f1[:-1], in_fts[:, -1], in_lbls],
                               ['x', 'y', 'z', 'f1', 'f2', 'classif'])
+
                     n_neighbs = np.sum((pool_inds < support_pts.shape[0]).astype(np.float32), axis=1)
-                    print(n_neighbs.shape)
+                    print(pool_points.shape, n_neighbs.shape)
                     write_ply('results/t_pools.ply',
                               [pool_points, n_neighbs],
                               ['x', 'y', 'z', 'n_n'])
@@ -2882,7 +2932,7 @@ class MyhalCollisionDataset(PointCloudDataset):
                     import matplotlib.pyplot as plt
                     from matplotlib.animation import FuncAnimation
                     pp = []
-                    for i in range(self.config.n_2D_layers):
+                    for i in range(self.config.n_2D_layers + 1):
                         pool_points[:, 2] = timestamps[i]
                         pp.append(np.copy(pool_points))
                     pp = np.concatenate(pp, axis=0)
@@ -2907,7 +2957,6 @@ class MyhalCollisionDataset(PointCloudDataset):
                     plt.savefig('results/t_input_proj.png')
                     plt.show()
 
-                    a = 1/0
 
 
                 ###########################################################################################

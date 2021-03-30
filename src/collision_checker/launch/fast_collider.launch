@@ -1,0 +1,6 @@
+<launch>
+    <param name="gpu_id" type="str" value="0" />
+	<param name="log_name" type="str" value="Log_2021-03-21_11-34-14"/>  <!-- First network (for Round2) -->
+	<param name="chkp_name" type="str" value="chkp_0400.tar"/>
+	<node name="fast_collider" pkg="collision_checker" type="fast_collider.py" output="screen"/>
+</launch>

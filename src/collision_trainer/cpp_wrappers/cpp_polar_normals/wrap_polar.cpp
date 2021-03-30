@@ -167,6 +167,7 @@ static PyObject* map_frame_comp(PyObject* self, PyObject* args, PyObject* keywds
 	float map_dl = 0.1;
 	float theta_dl = 0.1;
 	float phi_dl = 1.0;
+	float verbose_time = -1.0;
 	bool motion_distortion = false;
 	char* fnames_str;
 	PyObject* map_p_obj = NULL;
@@ -174,17 +175,18 @@ static PyObject* map_frame_comp(PyObject* self, PyObject* args, PyObject* keywds
 	PyObject* H_obj = NULL;
 
 	// Keywords containers
-	static char* kwlist[] = { "frame_names", "map_points",  "map_normals", "H_frames", "map_dl", "theta_dl", "phi_dl", NULL };
+	static char* kwlist[] = { "frame_names", "map_points",  "map_normals", "H_frames", "map_dl", "theta_dl", "phi_dl", "verbose_time", NULL };
 
 	// Parse the input  
-	if (!PyArg_ParseTupleAndKeywords(args, keywds, "zOOO|$fff", kwlist, 
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "zOOO|$ffff", kwlist, 
 		&fnames_str,
 		&map_p_obj, 
 		&map_n_obj, 
 		&H_obj, 
 		&map_dl, 
 		&theta_dl, 
-		&phi_dl))
+		&phi_dl, 
+		&verbose_time))
 	{
 		PyErr_SetString(PyExc_RuntimeError, "Error parsing arguments");
 		return NULL;
@@ -312,10 +314,12 @@ static PyObject* map_frame_comp(PyObject* self, PyObject* args, PyObject* keywds
 	// ***********************
 
 	// Loop on the lines of "frame_names" string
-	int verbose = 1;
 	istringstream iss(frame_names);
 	size_t frame_i = 0;
 	clock_t t0 = std::clock();
+	clock_t last_disp_t1 = std::clock();
+	float fps = 0.0;
+	float fps_regu = 0.9;
 	for (string line; getline(iss, line);)
 	{
 
@@ -351,13 +355,23 @@ static PyObject* map_frame_comp(PyObject* self, PyObject* args, PyObject* keywds
 		}
 		frame_i++;
 
-		if (verbose > 0)
+		// Timing
+		// ******
+		clock_t t1 = std::clock();
+		double duration = (t1 - t0) / (double)CLOCKS_PER_SEC;
+		fps = fps_regu * fps + (1.0 - fps_regu) / duration;
+
+		if (verbose_time > 0 && (t1 - last_disp_t1) / (double)CLOCKS_PER_SEC > verbose_time)
 		{
-			clock_t t1 = std::clock();
-			double duration = 1000 * (t1 - t0) / (double)CLOCKS_PER_SEC;
-			cout << "Annotation step " << frame_i << "/" << N_frames << " done in " << duration << " ms " << endl;
-			t0 = t1;
+			double remaining_sec = (N_frames - frame_i) / fps;
+			int remaining_min = (int)floor(remaining_sec / 60.0);
+			remaining_sec = remaining_sec - remaining_min * 60.0;
+			char buffer[100];
+			sprintf(buffer, "Annot %5d/%d at %5.1f fps - %d min %.0f sec remaining", (int)frame_i, N_frames, fps, remaining_min, remaining_sec);
+			cout << string(buffer) << endl;
+			last_disp_t1 = t1;
 		}
+		t0 = t1;
 	}
 
 	// Manage outputs

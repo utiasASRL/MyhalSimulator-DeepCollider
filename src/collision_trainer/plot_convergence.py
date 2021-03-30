@@ -1519,6 +1519,33 @@ def Myhal_sim_2(old_result_limit):
     return logs, logs_names
 
 
+def Myhal_sim_3(old_result_limit):
+    """
+    New experiments from the point where the validation function was modified.
+    First we experiment a little with lr decay 
+    """
+
+    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
+    start = 'Log_2021-03-08_21-57-25'
+    end = 'Log_2021-09-05_14-33-45'
+
+    if end < old_result_limit:
+        res_path = 'old_results'
+    else:
+        res_path = 'results'
+
+    logs = np.sort([join(res_path, log) for log in listdir(res_path) if start <= log <= end])
+    logs = logs.astype('<U50')
+
+    # Give names to the logs (for legends)
+    logs_names = ['SlowFlowFo-3sec',
+                  'SlowFlowFo-10sec-compact',
+                  ]
+
+    logs_names = np.array(logs_names[:len(logs)])
+
+    return logs, logs_names
+
 
 if __name__ == '__main__':
 
@@ -1530,7 +1557,7 @@ if __name__ == '__main__':
     old_res_lim = 'Log_2020-05-04_19-17-59'
 
     # My logs: choose the logs to show
-    logs, logs_names = Myhal_sim_2(old_res_lim)
+    logs, logs_names = Myhal_sim_3(old_res_lim)
     #os.environ['QT_DEBUG_PLUGINS'] = '1'
 
 

@@ -24,10 +24,10 @@
 #
 
 
-#path setup 
+# Path setup
 import os
 from os.path import exists, join
-import sys 
+import sys
 ENV_USER = os.getenv('USER')
 ENV_HOME = os.getenv('HOME')
 sys.path.insert(0, join(ENV_HOME, "catkin_ws/src/ros_numpy"))
@@ -64,13 +64,12 @@ import cpp_wrappers.cpp_subsampling.grid_subsampling as cpp_subsampling
 import cpp_wrappers.cpp_neighbors.radius_neighbors as cpp_neighbors
 
 
-
-
 # ----------------------------------------------------------------------------------------------------------------------
 #
 #           Utility functions
 #       \***********************/
 #
+
 
 def grid_subsampling(points, features=None, labels=None, sampleDl=0.1, verbose=0):
     """

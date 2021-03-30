@@ -70,7 +70,7 @@ class MyhalCollisionConfig(Config):
     dataset_task = ''
 
     # Number of CPU threads for the input pipeline
-    input_threads = 10
+    input_threads = 15
 
     #########################
     # Architecture definition
@@ -151,7 +151,7 @@ class MyhalCollisionConfig(Config):
     num_kernel_points = 15
 
     # Size of the first subsampling grid in meter
-    first_subsampling_dl = 0.05
+    first_subsampling_dl = 0.06
 
     # Radius of convolution in "number grid cell". (2.5 is the standard value)
     conv_radius = 2.5
@@ -169,7 +169,7 @@ class MyhalCollisionConfig(Config):
     aggregation_mode = 'sum'
 
     # Choice of input features
-    first_features_dim = 128
+    first_features_dim = 100
     in_features_dim = 3
 
     # Can the network learn modulations
@@ -197,7 +197,7 @@ class MyhalCollisionConfig(Config):
     # Learning rate management
     learning_rate = 1e-2
     momentum = 0.98
-    lr_decays = {i: 0.1 ** (1 / 100) for i in range(1, max_epoch)}
+    lr_decays = {i: 0.1 ** (1 / 150) for i in range(1, max_epoch)}
     grad_clip_norm = 100.0
 
     # Number of steps per epochs
@@ -243,7 +243,7 @@ if __name__ == '__main__':
     ############################
 
     # Set which gpu is going to be used
-    GPU_ID = '0'
+    GPU_ID = '1'
 
     # Set GPU visible device
     os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
@@ -275,14 +275,83 @@ if __name__ == '__main__':
                     '2020-10-16-14-36-12',
                     '2020-10-16-14-56-40']
 
+    train_days_RandWand = ['2021-03-19-22-58-27',
+                           '2021-03-19-23-07-18',
+                           '2021-03-19-23-26-42',
+                           '2021-03-19-23-47-49',
+                           '2021-03-19-23-54-55',
+                           '2021-03-20-00-12-29',
+                           '2021-03-20-00-25-03',
+                           '2021-03-20-00-38-13',
+                           '2021-03-20-00-50-36',
+                           '2021-03-20-01-12-54',
+                           '2021-03-20-01-21-43',
+                           '2021-03-20-01-33-11',
+                           '2021-03-20-02-01-40',
+                           '2021-03-20-02-09-17',
+                           '2021-03-20-02-26-40']
+
+    # train_days_RandFlow_old = ['2021-03-23-18-25-53',
+    #                            '2021-03-23-18-46-44',
+    #                            '2021-03-23-19-00-19',
+    #                            '2021-03-23-19-10-40',
+    #                            '2021-03-23-19-24-04',
+    #                            '2021-03-23-19-30-09',
+    #                            '2021-03-23-19-41-16',
+    #                            '2021-03-23-19-52-42',
+    #                            '2021-03-23-20-05-42',
+    #                            '2021-03-23-20-12-16',
+    #                            '2021-03-23-20-24-52',
+    #                            '2021-03-23-20-35-45',
+    #                            '2021-03-23-20-44-11',
+    #                            '2021-03-23-20-57-59']
+
+    # train_days_RandFlow = ['2021-03-25-19-32-51',
+    #                        '2021-03-25-19-51-21',
+    #                        '2021-03-25-20-16-26',
+    #                        '2021-03-25-21-02-40',
+    #                        '2021-03-25-21-17-42',
+    #                        '2021-03-25-21-39-19',
+    #                        '2021-03-25-22-08-50',
+    #                        '2021-03-25-22-20-56',
+    #                        '2021-03-25-22-51-18',
+    #                        '2021-03-25-23-31-49',
+    #                        '2021-03-25-23-50-48',
+    #                        '2021-03-26-00-17-18',
+    #                        '2021-03-26-00-49-57',
+    #                        '2021-03-26-01-09-11',
+    #                        '2021-03-26-01-41-16']
+
+    # train_days_flow = ['2021-03-16-17-44-40',
+    #                    '2021-03-16-17-49-39',
+    #                    '2021-03-16-18-05-16',
+    #                    '2021-03-16-18-10-53',
+    #                    '2021-03-16-18-28-46',
+    #                    '2021-03-16-19-01-26',
+    #                    '2021-03-16-19-12-29',
+    #                    '2021-03-16-19-26-10',
+    #                    '2021-03-16-19-46-05',
+    #                    '2021-03-16-20-06-30']
+
+                       
+    train_days_RandFlow = ['2021-03-26-16-53-44',
+                           '2021-03-26-17-22-31',
+                           '2021-03-26-18-02-18',
+                           '2021-03-26-18-58-03',
+                           '2021-03-26-19-22-03',
+                           '2021-03-26-20-09-03',
+                           '2021-03-26-21-07-18',
+                           '2021-03-26-21-34-51',
+                           '2021-03-26-22-20-38']
+
 
     ######################
     # Automatic Annotation
     ######################
 
     # Choose the dataset
-    train_days = np.array(train_days_1)
-    val_inds = [5, 11]
+    train_days = np.array(train_days_RandFlow)
+    val_inds = [0, 1]
     train_inds = [i for i in range(len(train_days)) if i not in val_inds]
 
     # Check if we need to redo annotation (only if there is no video)
@@ -294,7 +363,7 @@ if __name__ == '__main__':
             break
 
     # train_days = ['2020-10-20-16-30-49']
-    # redo_annot = True
+    #redo_annot = True
     if redo_annot:
 
         # Initiate dataset
@@ -302,7 +371,7 @@ if __name__ == '__main__':
         #slam_dataset = MyhalCollisionDataset(first_day='2020-06-24-14-36-49', last_day='2020-06-24-14-40-33')
 
         # Create a refined map from the map_day
-        slam_dataset.refine_map()
+        # slam_dataset.refine_map()
 
         # Groundtruth mapping
         #slam_dataset.debug_angular_velocity()

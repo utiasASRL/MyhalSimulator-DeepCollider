@@ -1170,14 +1170,14 @@ class KPCollider(nn.Module):
             self.prop_net = Propagation2DBlock(config.first_features_dim, config.first_features_dim, n_blocks=config.prop_2D_resnets)
 
             # Shared head softmax
-            self.head_softmax_2D = nn.Conv2d(config.first_features_dim, 1, kernel_size=1, bias=True)
+            self.head_softmax_2D = nn.Conv2d(config.first_features_dim, 3, kernel_size=1, bias=True)
 
         else:
             self.prop_net = nn.ModuleList()
             self.head_softmax_2D = nn.ModuleList()
             for i in range(config.n_2D_layers):
                 self.prop_net.append(Propagation2DBlock(config.first_features_dim, config.first_features_dim, n_blocks=config.prop_2D_resnets))
-                self.head_softmax_2D.append(nn.Conv2d(config.first_features_dim, 1, kernel_size=1, bias=True))
+                self.head_softmax_2D.append(nn.Conv2d(config.first_features_dim, 3, kernel_size=1, bias=True))
 
 
         ################
@@ -1324,7 +1324,7 @@ class KPCollider(nn.Module):
                     x_2D = self.prop_net[i](x_2D)
                     preds_2D.append(self.head_softmax_2D[i](x_2D))
 
-            # Stack 2d outputs and permute dimension to get the shape: [B, 2, L_2D, L_2D, 1]
+            # Stack 2d outputs and permute dimension to get the shape: [B, 2, L_2D, L_2D, 3]
             preds_2D = torch.stack(preds_2D, axis=2).permute(0, 2, 3, 4, 1)
 
         ##############
@@ -1397,20 +1397,23 @@ class KPCollider(nn.Module):
 
             # Propagation loss applied to each prop layer => shapes = [B, T_2D, L_2D, L_2D, 3]
             # Only use the positive pixels and approx 2 times more negative pixels (picked randomly)
-            future_gt = batch.future_2D[:, 1:, :, :, 2]
-            ratio_pos = float(torch.sum((future_gt > 0.01).to(torch.float32)) / float(torch.numel(future_gt)))
+            future_gt = batch.future_2D[:, 1:, :, :, :]
+            gt_mask = torch.sum(future_gt, dim=-1)
+            ratio_pos = float(torch.sum((gt_mask > 0.01).to(torch.float32)) / float(torch.numel(gt_mask)))
 
             # use a fixed conv2d to dilate positive inds
             with torch.no_grad():
-                dilated_gt = self.fixed_conv(future_gt)
+                dilated_gt = self.fixed_conv(gt_mask)
             dilated_inds = dilated_gt > 0.01
+            dilated_inds = torch.unsqueeze(dilated_inds, -1)
 
             # Add some random negative inds
-            future_p = preds_2D[:, :, :, :, 0]
-            loss_mask = torch.rand_like(future_p)
+            future_p = preds_2D[:, :, :, :, :]
+            loss_mask = torch.rand_like(future_p[:, :, :, :, :1])
             loss_mask[dilated_inds] = 1.0
             threshold = min(1.0 - ratio_pos * self.neg_pos_ratio, 0.9)
             loss_mask = loss_mask > threshold
+            loss_mask = loss_mask.repeat(1, 1, 1, 1, 3)
             self.prop_2D_loss = self.power_2D_prop_loss * self.criterion_2D(future_p[loss_mask], future_gt[loss_mask])
 
             # Sum the two 2D losses

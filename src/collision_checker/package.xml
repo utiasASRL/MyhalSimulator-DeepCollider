@@ -69,6 +69,11 @@
   <exec_depend>std_srvs</exec_depend>
 
 
+  <!-- Generation of our custom messages -->
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+
+
   <!-- The export tag contains other, unspecified, tags -->
   <export>
     <!-- Other tools can request additional information be placed here -->

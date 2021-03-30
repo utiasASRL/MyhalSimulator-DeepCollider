@@ -297,6 +297,7 @@ Eigen::MatrixXd call_on_sim_sequence(string& frame_names,
 	size_t frame_i = 0;
 	size_t gt_i0 = 0;
 	size_t gt_i1 = 0;
+	clock_t last_disp_t1 = clock();
 
 	// Loop on the lines of "frame_names" string
 	istringstream iss(frame_names);
@@ -390,6 +391,9 @@ Eigen::MatrixXd call_on_sim_sequence(string& frame_names,
 			cout << "T_error = " << T_error << endl;
 			cout << "R_error = " << R_error << endl;
 			cout << "Stopping mapping and saving debug frames" << endl;
+			char buffer[100];
+			sprintf(buffer, "Frame %d named %s", (int)frame_i, line);
+			cout << string(buffer) << endl;
 			cout <<"*************************************************" << endl << endl;
 			save_cloud("debug_map.ply", mapper.map.cloud.pts, mapper.map.normals, mapper.map.scores);
 			break;
@@ -409,9 +413,17 @@ Eigen::MatrixXd call_on_sim_sequence(string& frame_names,
 
 		double duration = (t1 - t0) / (double)CLOCKS_PER_SEC;
 		fps = fps_regu * fps + (1.0 - fps_regu) / duration;
-		char buffer[100];
-		sprintf(buffer, "Frame %05d - Speed = %.1f fps", (int)frame_i, fps);
-		cout << string(buffer) << endl;
+
+		if (slam_params.verbose_time > 0 && (t1 - last_disp_t1) / (double)CLOCKS_PER_SEC > slam_params.verbose_time)
+		{
+			double remaining_sec = (frame_times.size() - frame_i) / fps;
+			int remaining_min = (int)floor(remaining_sec / 60.0);
+			remaining_sec = remaining_sec - remaining_min * 60.0;
+			char buffer[100];
+			sprintf(buffer, "Mapping %5d/%d at %5.1f fps - %d min %.0f sec remaining", (int)frame_i, frame_times.size(), fps, remaining_min, remaining_sec);
+			cout << string(buffer) << endl;
+			last_disp_t1 = t1;
+		}
 
 		frame_i++;
 

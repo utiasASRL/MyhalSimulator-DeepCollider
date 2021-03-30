@@ -50,6 +50,9 @@ public:
 	// Are we filtering frames
 	bool filtering;
 
+	// Verbose option (time in sec between each verbose negative for no verbose)
+	float verbose_time;
+
 	// Transformation matrix from velodyne frame to base frame
 	Eigen::Matrix4d H_velo_base;
 
@@ -73,6 +76,7 @@ public:
 		frame_voxel_size = 0.2;
 		motion_distortion = false;
 		filtering = false;
+		verbose_time = -1;
 		H_velo_base = Eigen::Matrix4d::Identity(4, 4);
 
 		h_scale = 0.5;
