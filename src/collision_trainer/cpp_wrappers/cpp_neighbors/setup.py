@@ -8,6 +8,7 @@ import numpy.distutils.misc_util
 # *****************************
 
 SOURCES = ["../src/cloud/cloud.cpp",
+           "../src/cloud/points.cpp",
            "../src/npm_ply/ply_file_in.cc",
            "../src/npm_ply/ply_file_out.cc",
            "../src/neighbors/neighbors.cpp",

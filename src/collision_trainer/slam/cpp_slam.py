@@ -27,6 +27,7 @@ import cpp_wrappers.cpp_polar_normals.polar_processing as cpp_polar_processing
 import cpp_wrappers.cpp_icp.icp as cpp_icp
 import cpp_wrappers.cpp_pointmap.pointmap as cpp_pointmap
 import cpp_wrappers.cpp_slam.pointmap_slam as cpp_pointmap_slam
+import cpp_wrappers.cpp_lidar_utils.lidar_utils as cpp_lidar_utils
 
 # ----------------------------------------------------------------------------------------------------------------------
 #
@@ -234,3 +235,44 @@ def slam_on_sim_sequence(f_names,
     H = np.stack([H[i*4:(i+1)*4, :] for i in range(H.shape[0] // 4)])
 
     return H
+
+
+def get_lidar_visibility(points,
+                         center,
+                         ground_plane,
+                         n_angles=720,
+                         z_min=0.4,
+                         z_max=1.5,
+                         dl_2D=-1.0):
+    """
+    :param points: (N, 3) the points of the frame
+    :param radius: radius in angular resolution unit.
+    :param lidar_angle_res: angular resolution of the lidar
+    :param h_scale: horizontal scale
+    :param r_scale: range scale
+    :param verbose: display option
+    :return: normals and scores
+    """
+
+    "points", "center", "ground", "n_angles", "z_min", "z_max"
+
+    return cpp_lidar_utils.get_visibility(points,
+                                          center,
+                                          ground_plane,
+                                          n_angles=n_angles,
+                                          z_min=z_min,
+                                          z_max=z_max,
+                                          dl_2D=dl_2D)
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1341,6 +1341,7 @@ class KPCollider(nn.Module):
 
         return preds_3D, preds_init_2D, preds_2D
 
+
     def loss(self, outputs, batch):
         """
         Runs the loss on outputs of the model
@@ -1414,6 +1415,32 @@ class KPCollider(nn.Module):
             threshold = min(1.0 - ratio_pos * self.neg_pos_ratio, 0.9)
             loss_mask = loss_mask > threshold
             loss_mask = loss_mask.repeat(1, 1, 1, 1, 3)
+
+
+            # import matplotlib.pyplot as plt
+            # from matplotlib.animation import FuncAnimation
+            # fig, ax = plt.subplots()
+            # debug_img = loss_mask[0, :, :, :, 0].cpu().detach().numpy()
+            # im = plt.imshow(debug_img[0])
+            # def animate(i):
+            #     im.set_array(debug_img[i])
+            #     return [im]
+            # anim = FuncAnimation(fig, animate,
+            #                      frames=np.arange(debug_img.shape[0]),
+            #                      interval=50,
+            #                      blit=True)
+            # fig2, ax = plt.subplots()
+            # debug_img2 = future_gt[0, :, :, :, :].cpu().detach().numpy()
+            # im2 = plt.imshow(debug_img2[0])
+            # def animate2(i):
+            #     im2.set_array(debug_img2[i])
+            #     return [im2]
+            # anim2 = FuncAnimation(fig2, animate2,
+            #                       frames=np.arange(debug_img2.shape[0]),
+            #                       interval=50,
+            #                       blit=True)
+            # plt.show()
+
             self.prop_2D_loss = self.power_2D_prop_loss * self.criterion_2D(future_p[loss_mask], future_gt[loss_mask])
 
             # Sum the two 2D losses

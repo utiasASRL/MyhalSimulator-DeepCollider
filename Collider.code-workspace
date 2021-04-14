@@ -17,6 +17,11 @@
 			"/opt/ros/noetic/lib/python3/dist-packages/rospy",
 			"/opt/ros/noetic/lib/**",
 			"/home/hth/catkin_ws/devel/lib/python3/dist-packages"
-		]
+		],
+		"files.associations": {
+			"random": "cpp",
+			"ostream": "cpp",
+			"*.tcc": "cpp"
+		}
 	}
 }

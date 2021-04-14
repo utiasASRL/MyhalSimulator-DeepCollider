@@ -1425,6 +1425,7 @@ class ModelTrainer:
             # Forward pass
             outputs, preds_init_2D, preds_2D = net(batch, config)
 
+            t += [time.time()]
 
             # Get probs and labels
             stk_probs = softmax(outputs).cpu().detach().numpy()
@@ -1573,10 +1574,11 @@ class ModelTrainer:
             # Display
             if (t[-1] - last_display) > 1.0:
                 last_display = t[-1]
-                message = 'Validation : {:.1f}% (timings : {:4.2f} {:4.2f})'
+                message = 'Validation : {:.1f}% (timings : {:4.2f} {:4.2f} {:4.2f})'
                 print(message.format(100 * i / config.validation_size,
                                      1000 * (mean_dt[0]),
-                                     1000 * (mean_dt[1])))
+                                     1000 * (mean_dt[1]),
+                                     1000 * (mean_dt[2])))
 
         t2 = time.time()
 

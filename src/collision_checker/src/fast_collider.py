@@ -42,12 +42,15 @@ import torch
 import pickle
 import time
 import numpy as np
+import torch.multiprocessing as mp
 
 # Useful classes
 from utils.config import Config
 from utils.ply import read_ply, write_ply
 from models.architectures import KPCollider
 from kernels.kernel_points import create_3D_rotations
+from torch.utils.data import DataLoader, Sampler
+from fast_collider_data import MyhalCollisionCollate, OnlineDataset, OnlineSampler
 
 # ROS
 import rospy
@@ -55,450 +58,22 @@ import ros_numpy
 import rosgraph
 from ros_numpy import point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2, PointField
+from nav_msgs.msg import OccupancyGrid, MapMetaData
+from geometry_msgs.msg import Pose
 from collision_checker.msg import VoxGrid
+import tf2_ros
+from tf2_msgs.msg import TFMessage
 
 # for pausing gazebo during computation:
 from std_srvs.srv import Empty
 from sensor_msgs.msg import LaserScan
 
-# Subsampling extension
-import cpp_wrappers.cpp_subsampling.grid_subsampling as cpp_subsampling
-import cpp_wrappers.cpp_neighbors.radius_neighbors as cpp_neighbors
 
 
-# ----------------------------------------------------------------------------------------------------------------------
-#
-#           Utility functions
-#       \***********************/
-#
 
+class OnlineCollider():
 
-def grid_subsampling(points, features=None, labels=None, sampleDl=0.1, verbose=0):
-    """
-    CPP wrapper for a grid subsampling (method = barycenter for points and features)
-    :param points: (N, 3) matrix of input points
-    :param features: optional (N, d) matrix of features (floating number)
-    :param labels: optional (N,) matrix of integer labels
-    :param sampleDl: parameter defining the size of grid voxels
-    :param verbose: 1 to display
-    :return: subsampled points, with features and/or labels depending of the input
-    """
-
-    if (features is None) and (labels is None):
-        return cpp_subsampling.subsample(points,
-                                         sampleDl=sampleDl,
-                                         verbose=verbose)
-    elif (labels is None):
-        return cpp_subsampling.subsample(points,
-                                         features=features,
-                                         sampleDl=sampleDl,
-                                         verbose=verbose)
-    elif (features is None):
-        return cpp_subsampling.subsample(points,
-                                         classes=labels,
-                                         sampleDl=sampleDl,
-                                         verbose=verbose)
-    else:
-        return cpp_subsampling.subsample(points,
-                                         features=features,
-                                         classes=labels,
-                                         sampleDl=sampleDl,
-                                         verbose=verbose)
-
-
-def batch_grid_subsampling(points, batches_len, features=None, labels=None,
-                           sampleDl=0.1, max_p=0, verbose=0, random_grid_orient=False):
-    """
-    CPP wrapper for a grid subsampling (method = barycenter for points and features)
-    :param points: (N, 3) matrix of input points
-    :param features: optional (N, d) matrix of features (floating number)
-    :param labels: optional (N,) matrix of integer labels
-    :param sampleDl: parameter defining the size of grid voxels
-    :param verbose: 1 to display
-    :return: subsampled points, with features and/or labels depending of the input
-    """
-
-    R = None
-    B = len(batches_len)
-    if random_grid_orient:
-
-        ########################################################
-        # Create a random rotation matrix for each batch element
-        ########################################################
-
-        # Choose two random angles for the first vector in polar coordinates
-        theta = np.random.rand(B) * 2 * np.pi
-        phi = (np.random.rand(B) - 0.5) * np.pi
-
-        # Create the first vector in carthesian coordinates
-        u = np.vstack([np.cos(theta) * np.cos(phi), np.sin(theta) * np.cos(phi), np.sin(phi)])
-
-        # Choose a random rotation angle
-        alpha = np.random.rand(B) * 2 * np.pi
-
-        # Create the rotation matrix with this vector and angle
-        R = create_3D_rotations(u.T, alpha).astype(np.float32)
-
-        #################
-        # Apply rotations
-        #################
-
-        i0 = 0
-        points = points.copy()
-        for bi, length in enumerate(batches_len):
-            # Apply the rotation
-            points[i0:i0 + length, :] = np.sum(np.expand_dims(points[i0:i0 + length, :], 2) * R[bi], axis=1)
-            i0 += length
-
-    #######################
-    # Subsample and realign
-    #######################
-
-    if (features is None) and (labels is None):
-        s_points, s_len = cpp_subsampling.subsample_batch(points,
-                                                          batches_len,
-                                                          sampleDl=sampleDl,
-                                                          max_p=max_p,
-                                                          verbose=verbose)
-        if random_grid_orient:
-            i0 = 0
-            for bi, length in enumerate(s_len):
-                s_points[i0:i0 + length, :] = np.sum(np.expand_dims(s_points[i0:i0 + length, :], 2) * R[bi].T, axis=1)
-                i0 += length
-        return s_points, s_len
-
-    elif (labels is None):
-        s_points, s_len, s_features = cpp_subsampling.subsample_batch(points,
-                                                                      batches_len,
-                                                                      features=features,
-                                                                      sampleDl=sampleDl,
-                                                                      max_p=max_p,
-                                                                      verbose=verbose)
-        if random_grid_orient:
-            i0 = 0
-            for bi, length in enumerate(s_len):
-                # Apply the rotation
-                s_points[i0:i0 + length, :] = np.sum(np.expand_dims(s_points[i0:i0 + length, :], 2) * R[bi].T, axis=1)
-                i0 += length
-        return s_points, s_len, s_features
-
-    elif (features is None):
-        s_points, s_len, s_labels = cpp_subsampling.subsample_batch(points,
-                                                                    batches_len,
-                                                                    classes=labels,
-                                                                    sampleDl=sampleDl,
-                                                                    max_p=max_p,
-                                                                    verbose=verbose)
-        if random_grid_orient:
-            i0 = 0
-            for bi, length in enumerate(s_len):
-                # Apply the rotation
-                s_points[i0:i0 + length, :] = np.sum(np.expand_dims(s_points[i0:i0 + length, :], 2) * R[bi].T, axis=1)
-                i0 += length
-        return s_points, s_len, s_labels
-
-    else:
-        s_points, s_len, s_features, s_labels = cpp_subsampling.subsample_batch(points,
-                                                                                batches_len,
-                                                                                features=features,
-                                                                                classes=labels,
-                                                                                sampleDl=sampleDl,
-                                                                                max_p=max_p,
-                                                                                verbose=verbose)
-        if random_grid_orient:
-            i0 = 0
-            for bi, length in enumerate(s_len):
-                # Apply the rotation
-                s_points[i0:i0 + length, :] = np.sum(np.expand_dims(s_points[i0:i0 + length, :], 2) * R[bi].T, axis=1)
-                i0 += length
-        return s_points, s_len, s_features, s_labels
-
-
-def batch_neighbors(queries, supports, q_batches, s_batches, radius):
-    """
-    Computes neighbors for a batch of queries and supports
-    :param queries: (N1, 3) the query points
-    :param supports: (N2, 3) the support points
-    :param q_batches: (B) the list of lengths of batch elements in queries
-    :param s_batches: (B)the list of lengths of batch elements in supports
-    :param radius: float32
-    :return: neighbors indices
-    """
-
-    return cpp_neighbors.batch_query(queries, supports, q_batches, s_batches, radius=radius)
-
-
-# ----------------------------------------------------------------------------------------------------------------------
-#
-#           Online tester class
-#       \*************************/
-#
-
-
-class OnlineData:
-
-    def __init__(self, config):
-
-        # Dict from labels to names
-        self.label_to_names = {0: 'uncertain',
-                               1: 'ground',
-                               2: 'still',
-                               3: 'longT',
-                               4: 'shortT'}
-
-        # Initiate a bunch of variables concerning class labels
-        self.num_classes = len(self.label_to_names)
-        self.label_values = np.sort([k for k, v in self.label_to_names.items()])
-        self.label_names = [self.label_to_names[k] for k in self.label_values]
-        self.label_to_idx = {l: i for i, l in enumerate(self.label_values)}
-        self.name_to_label = {v: k for k, v in self.label_to_names.items()}
-
-        # List of classes ignored during training (can be empty)
-        self.ignored_labels = np.sort([0])
-
-        # Load neighb_limits dictionary
-        neighb_lim_file = join(ENV_HOME, 'Data/MyhalSim/neighbors_limits.pkl')
-        if exists(neighb_lim_file):
-            with open(neighb_lim_file, 'rb') as file:
-                neighb_lim_dict = pickle.load(file)
-        else:
-            raise ValueError('No neighbors limit file found')
-
-        # Check if the limit associated with current parameters exists (for each layer)
-        neighb_limits = []
-        for layer_ind in range(config.num_layers):
-
-            dl = config.first_subsampling_dl * (2**layer_ind)
-            if config.deform_layers[layer_ind]:
-                r = dl * config.deform_radius
-            else:
-                r = dl * config.conv_radius
-
-            key = '{:s}_{:d}_{:d}_{:.3f}_{:.3f}'.format('random',
-                                                        config.n_frames,
-                                                        config.max_val_points,
-                                                        dl,
-                                                        r)
-            if key in neighb_lim_dict:
-                neighb_limits += [neighb_lim_dict[key]]
-
-        if len(neighb_limits) == config.num_layers:
-            self.neighborhood_limits = neighb_limits
-        else:
-            raise ValueError('The neighbors limits were not initialized')
-
-    def big_neighborhood_filter(self, neighbors, layer):
-        """
-        Filter neighborhoods with max number of neighbors. Limit is set to keep XX% of the neighborhoods untouched.
-        Limit is computed at initialization
-        """
-
-        # crop neighbors matrix
-        if len(self.neighborhood_limits) > 0:
-            return neighbors[:, :self.neighborhood_limits[layer]]
-        else:
-            return neighbors
-
-    def build_segmentation_input_list(self, config, stacked_points, stack_lengths):
-
-        # Starting radius of convolutions
-        r_normal = config.first_subsampling_dl * config.conv_radius
-
-        # Starting layer
-        layer_blocks = []
-
-        # Lists of inputs
-        input_points = []
-        input_neighbors = []
-        input_pools = []
-        input_upsamples = []
-        input_stack_lengths = []
-        deform_layers = []
-
-        ######################
-        # Loop over the blocks
-        ######################
-
-        arch = config.architecture
-
-        for block_i, block in enumerate(arch):
-
-            # Get all blocks of the layer
-            if not ('pool' in block or 'strided' in block or 'global' in block or 'upsample' in block):
-                layer_blocks += [block]
-                continue
-
-            # Convolution neighbors indices
-            # *****************************
-
-            deform_layer = False
-            if layer_blocks:
-                # Convolutions are done in this layer, compute the neighbors with the good radius
-                if np.any(['deformable' in blck for blck in layer_blocks]):
-                    r = r_normal * config.deform_radius / config.conv_radius
-                    deform_layer = True
-                else:
-                    r = r_normal
-                conv_i = batch_neighbors(stacked_points, stacked_points, stack_lengths, stack_lengths, r)
-
-            else:
-                # This layer only perform pooling, no neighbors required
-                conv_i = np.zeros((0, 1), dtype=np.int32)
-
-            # Pooling neighbors indices
-            # *************************
-
-            # If end of layer is a pooling operation
-            if 'pool' in block or 'strided' in block:
-
-                # New subsampling length
-                dl = 2 * r_normal / config.conv_radius
-
-                # Subsampled points
-                pool_p, pool_b = batch_grid_subsampling(stacked_points, stack_lengths, sampleDl=dl)
-
-                # Radius of pooled neighbors
-                if 'deformable' in block:
-                    r = r_normal * config.deform_radius / config.conv_radius
-                    deform_layer = True
-                else:
-                    r = r_normal
-
-                # Subsample indices
-                pool_i = batch_neighbors(pool_p, stacked_points, pool_b, stack_lengths, r)
-
-                # Upsample indices (with the radius of the next layer to keep wanted density)
-                up_i = batch_neighbors(stacked_points, pool_p, stack_lengths, pool_b, 2 * r)
-
-            else:
-                # No pooling in the end of this layer, no pooling indices required
-                pool_i = np.zeros((0, 1), dtype=np.int32)
-                pool_p = np.zeros((0, 3), dtype=np.float32)
-                pool_b = np.zeros((0,), dtype=np.int32)
-                up_i = np.zeros((0, 1), dtype=np.int32)
-
-            # Reduce size of neighbors matrices by eliminating furthest point
-            conv_i = self.big_neighborhood_filter(conv_i, len(input_points))
-            pool_i = self.big_neighborhood_filter(pool_i, len(input_points))
-            if up_i.shape[0] > 0:
-                up_i = self.big_neighborhood_filter(up_i, len(input_points) + 1)
-
-            # Updating input lists
-            input_points += [stacked_points]
-            input_neighbors += [conv_i.astype(np.int64)]
-            input_pools += [pool_i.astype(np.int64)]
-            input_upsamples += [up_i.astype(np.int64)]
-            input_stack_lengths += [stack_lengths]
-            deform_layers += [deform_layer]
-
-            # New points for next layer
-            stacked_points = pool_p
-            stack_lengths = pool_b
-
-            # Update radius and reset blocks
-            r_normal *= 2
-            layer_blocks = []
-
-            # Stop when meeting a global pooling or upsampling
-            if 'global' in block or 'upsample' in block:
-                break
-
-        ###############
-        # Return inputs
-        ###############
-
-        # list of network inputs
-        li = input_points + input_neighbors + input_pools + input_upsamples + input_stack_lengths
-
-        return li
-
-
-class OnlineBatch:
-    """Custom batch definition for online frame processing"""
-
-    def __init__(self, frame_points, config, data_handler):
-        """
-        Function creating the batch structure from frame points.
-        :param frame_points: matrix of the frame points
-        :param config: Configuration class
-        :param data_handler: Data handling class
-        """
-
-        # TODO: Speed up this CPU preprocessing
-        #           > Use OMP for neighbors processing
-        #           > Use the polar coordinates to get neighbors???? (avoiding tree building time)
-
-        # First subsample points
-
-        in_pts = grid_subsampling(frame_points, sampleDl=config.first_subsampling_dl)
-
-        # Randomly drop some points (safety for GPU memory consumption)
-        if in_pts.shape[0] > config.max_val_points:
-            input_inds = np.random.choice(in_pts.shape[0], size=config.max_val_points, replace=False)
-            in_pts = in_pts[input_inds, :]
-
-        # Length of the point list (here not really useful but the network need that value)
-        in_lengths = np.array([in_pts.shape[0]], dtype=np.int32)
-
-        # Features the network was trained with
-        in_features = np.ones_like(in_pts[:, :1], dtype=np.float32)
-        if config.in_features_dim == 1:
-            pass
-        elif config.in_features_dim == 2:
-            # Use height coordinate
-            in_features = np.hstack((in_features, in_pts[:, 2:3]))
-        elif config.in_features_dim == 4:
-            # Use all coordinates
-            in_features = np.hstack((in_features, in_pts[:3]))
-
-        # Get the whole input list
-        input_list = data_handler.build_segmentation_input_list(config, in_pts, in_lengths)
-
-        # Extract input tensors from the list of numpy array
-        ind = 0
-        self.points = [torch.from_numpy(nparray) for nparray in input_list[ind:ind+config.num_layers]]
-        ind += config.num_layers
-        self.neighbors = [torch.from_numpy(nparray) for nparray in input_list[ind:ind+config.num_layers]]
-        ind += config.num_layers
-        self.pools = [torch.from_numpy(nparray) for nparray in input_list[ind:ind+config.num_layers]]
-        ind += config.num_layers
-        self.upsamples = [torch.from_numpy(nparray) for nparray in input_list[ind:ind+config.num_layers]]
-        ind += config.num_layers
-        self.lengths = [torch.from_numpy(nparray) for nparray in input_list[ind:ind+config.num_layers]]
-        ind += config.num_layers
-        self.features = torch.from_numpy(in_features)
-
-        return
-
-    def pin_memory(self):
-        """
-        Manual pinning of the memory
-        """
-
-        self.points = [in_tensor.pin_memory() for in_tensor in self.points]
-        self.neighbors = [in_tensor.pin_memory() for in_tensor in self.neighbors]
-        self.pools = [in_tensor.pin_memory() for in_tensor in self.pools]
-        self.upsamples = [in_tensor.pin_memory() for in_tensor in self.upsamples]
-        self.lengths = [in_tensor.pin_memory() for in_tensor in self.lengths]
-        self.features = self.features.pin_memory()
-
-        return self
-
-    def to(self, device):
-
-        self.points = [in_tensor.to(device) for in_tensor in self.points]
-        self.neighbors = [in_tensor.to(device) for in_tensor in self.neighbors]
-        self.pools = [in_tensor.to(device) for in_tensor in self.pools]
-        self.upsamples = [in_tensor.to(device) for in_tensor in self.upsamples]
-        self.lengths = [in_tensor.to(device) for in_tensor in self.lengths]
-        self.features = self.features.to(device)
-
-        return self
-
-
-class OnlineCollider:
-
-    def __init__(self, in_topic):
+    def __init__(self):
 
         ####################
         # Init environment #
@@ -516,6 +91,12 @@ class OnlineCollider:
             self.device = torch.device("cuda:0")
         else:
             self.device = torch.device("cpu")
+            
+        ############
+        # Init ROS #
+        ############
+
+        rospy.init_node('fast_collider', anonymous=True)
 
         ######################
         # Load trained model #
@@ -527,8 +108,7 @@ class OnlineCollider:
 
         # Choose which training checkpoints to use
         log_name = rospy.get_param('/log_name')
-        training_path = join('../../collision_trainer/results', log_name)
-        
+        training_path = join(ENV_HOME, 'catkin_ws/src/collision_trainer/results', log_name)
         chkp_name = rospy.get_param('/chkp_name')
         chkp_path = os.path.join(training_path, 'checkpoints', chkp_name)
 
@@ -537,10 +117,17 @@ class OnlineCollider:
         self.config.load(training_path)
 
         # Init data class
-        self.data_handler = OnlineData(self.config)
+        self.online_dataset = OnlineDataset(self.config)
+        self.online_sampler = OnlineSampler(self.online_dataset)
+        self.online_loader = DataLoader(self.online_dataset,
+                                        batch_size=1,
+                                        sampler=self.online_sampler,
+                                        collate_fn=MyhalCollisionCollate,
+                                        num_workers=1,
+                                        pin_memory=True)
 
         # Define network model
-        self.net = KPCollider(self.config, self.data_handler.label_values, self.data_handler.ignored_labels)
+        self.net = KPCollider(self.config, self.online_dataset.label_values, self.online_dataset.ignored_labels)
         self.net.to(self.device)
         self.softmax = torch.nn.Softmax(1)
         self.sigmoid_2D = torch.nn.Sigmoid()
@@ -558,144 +145,99 @@ class OnlineCollider:
         print("\nModel and training state restored from " + chkp_path)
         print('Done in {:.1f}s\n'.format(time.time() - t1))
 
-        ############
-        # Init ROS #
-        ############
+        ###############
+        # ROS sub/pub #
+        ###############
 
-        rospy.init_node('fast_collider', anonymous=True)
-        # obtaining/defining the parameters for the output of the laserscan data
-        try:
-            self.gmapping_status = rospy.get_param('gmapping_status')
-        except KeyError:
-            self.gmapping_status = True
-        
-        self.template_scan = LaserScan()
+        # Subscribe to the lidar topic
+        print('\nSubscribe to /velodyne_points')
+        rospy.Subscriber("/velodyne_points", PointCloud2, self.lidar_callback)
+        print('OK\n')
 
-        self.template_scan.angle_max = np.pi
-        self.template_scan.angle_min = -np.pi
-        self.template_scan.angle_increment = 0.01
-        self.template_scan.time_increment = 0.0
-        self.template_scan.scan_time = 0.01
-        self.template_scan.range_min = 0.0
-        self.template_scan.range_max = 30.0
-        self.min_height = 0.01
-        self.max_height = 1
-        self.ranges_size = int(np.ceil((self.template_scan.angle_max - self.template_scan.angle_min)/self.template_scan.angle_increment))
+        # Subsrcibe
+        print('\nSubscribe to tf messages')
+        self.tfBuffer = tf2_ros.Buffer()
+        self.tfListener = tf2_ros.TransformListener(self.tfBuffer)
+        rospy.Subscriber("/tf", TFMessage, self.tf_callback)
+        print('OK\n')
 
+        # Init collision publisher
         self.collision_pub = rospy.Publisher('/collision_preds', VoxGrid, queue_size=10)
+        self.visu_pub = rospy.Publisher('/collision_visu', OccupancyGrid, queue_size=10)
         self.time_resolution = self.config.T_2D / self.config.n_2D_layers
-        #self.tf_listener = tf.TransformListener()
+
+        # # obtaining/defining the parameters for the output of the laserscan data
+        # try:
+        #     self.gmapping_status = rospy.get_param('gmapping_status')
+        # except KeyError:
+        #     self.gmapping_status = True
+        
+        # self.template_scan = LaserScan()
+
+        # self.template_scan.angle_max = np.pi
+        # self.template_scan.angle_min = -np.pi
+        # self.template_scan.angle_increment = 0.01
+        # self.template_scan.time_increment = 0.0
+        # self.template_scan.scan_time = 0.01
+        # self.template_scan.range_min = 0.0
+        # self.template_scan.range_max = 30.0
+        # self.min_height = 0.01
+        # self.max_height = 1
+        # self.ranges_size = int(np.ceil((self.template_scan.angle_max - self.template_scan.angle_min)/self.template_scan.angle_increment))
+
                                                                                     
-        self.pub_funcs = []
-        if (PUBLISH_POINTCLOUD):
-            self.pub = rospy.Publisher('/classified_points', PointCloud2, queue_size=10)
-            self.pub_funcs.append(self.publish_as_pointcloud)
-        if (PUBLISH_LASERSCAN):
-            # scan for local planner (the first element of the tuple denotes the classes alloted to that scan)
-            self.pub_list = [([0, 1, 2, 3, 4], rospy.Publisher('/local_planner_points2', LaserScan, queue_size=10))]
-            self.pub_funcs.append(self.publish_as_laserscan)
-            if (self.gmapping_status):
-                self.pub_list.append(([0, 2, 3], rospy.Publisher('/gmapping_points2', LaserScan, queue_size=10)))  # scan for gmapping
-            else:
-                self.pub_list.append(([2], rospy.Publisher('/amcl_points2', LaserScan, queue_size=10)))  # scan for amcl localization
-                self.pub_list.append(([0, 2, 3], rospy.Publisher('/global_planner_points2', LaserScan, queue_size=10)))  # scan for global planner
+        # self.pub_funcs = []
+        # if (PUBLISH_POINTCLOUD):
+        #     self.pub = rospy.Publisher('/classified_points', PointCloud2, queue_size=10)
+        #     self.pub_funcs.append(self.publish_as_pointcloud)
+        # if (PUBLISH_LASERSCAN):
+        #     # scan for local planner (the first element of the tuple denotes the classes alloted to that scan)
+        #     self.pub_list = [([0, 1, 2, 3, 4], rospy.Publisher('/local_planner_points2', LaserScan, queue_size=10))]
+        #     self.pub_funcs.append(self.publish_as_laserscan)
+        #     if (self.gmapping_status):
+        #         self.pub_list.append(([0, 2, 3], rospy.Publisher('/gmapping_points2', LaserScan, queue_size=10)))  # scan for gmapping
+        #     else:
+        #         self.pub_list.append(([2], rospy.Publisher('/amcl_points2', LaserScan, queue_size=10)))  # scan for amcl localization
+        #         self.pub_list.append(([0, 2, 3], rospy.Publisher('/global_planner_points2', LaserScan, queue_size=10)))  # scan for global planner
 
-        rospy.Subscriber(in_topic, PointCloud2, self.lidar_callback)
-        rospy.spin()
+        return
 
-    def network_inference(self, points):
-        """
-        Function simulating a network inference.
-        :param points: The input list of points as a numpy array (type float32, size [N,3])
-        :return: predictions : The output of the network. Class for each point as a numpy array (type int32, size [N])
-        """
 
-        # Ensure no gradient is computed
-        with torch.no_grad():
+    def tf_callback(self, msg):
 
-            #####################
-            # Input preparation #
-            #####################
+        frame_recieved = False
+        for transform in msg.transforms:
+            if transform.header.frame_id == 'map' and transform.child_frame_id == 'odom':
+                frame_recieved = True
 
-            # t = [time.time()]
 
-            # Create batch from the frame points
-            batch = OnlineBatch(points, self.config, self.data_handler)
+        if frame_recieved:
+            #print(frame_recieved)
 
-            # t += [time.time()]
+            # Get the time stamps for all frames
+            for f_i, data in enumerate(self.online_dataset.frame_queue):
 
-            # Convert batch to a cuda
-            batch.to(self.device)
-            # t += [time.time()]
-            torch.cuda.synchronize(self.device)
+                if self.online_dataset.pose_queue[f_i] is None:
+                    pose = None
+                    while pose is None and (rospy.get_rostime() < data[0] + rospy.Duration(1.0)):
+                        try:
+                            pose = self.tfBuffer.lookup_transform('map', 'velodyne', data[0])
+                            print('{:^35s}'.format('stamp {:.3f} read at {:.3f}'.format(pose.header.stamp.to_sec(), rospy.get_rostime().to_sec())), 35*' ', 35*' ')
+                        except (tf2_ros.InvalidArgumentException, tf2_ros.LookupException, tf2_ros.ExtrapolationException) as e:
+                            print(e)
+                            print(rospy.get_rostime(), data[0] + rospy.Duration(1.0))
+                            time.sleep(0.001)
+                            pass
 
-            #####################
-            # Network inference #
-            #####################
+                    with self.online_dataset.worker_lock:
+                        self.online_dataset.pose_queue[f_i] = pose
+        return
 
-            # Forward pass
-            outputs, preds_init, preds_future = self.net(batch, self.config)
-            torch.cuda.synchronize(self.device)
-            # t += [time.time()]
-
-            # Get probs and labels
-            predicted_point_probs = self.softmax(outputs).cpu().detach().numpy()
-            torch.cuda.synchronize(self.device)
-            # t += [time.time()]
-
-            ##################
-            # Handle outputs #
-            ##################
-
-            # Insert false columns for ignored labels
-            for l_ind, label_value in enumerate(self.data_handler.label_values):
-                if label_value in self.data_handler.ignored_labels:
-                    predicted_point_probs = np.insert(predicted_point_probs, l_ind, 0, axis=1)
-
-            # Get predicted labels
-            point_predictions = self.data_handler.label_values[np.argmax(predicted_point_probs, axis=1)].astype(np.int32)
-            # t += [time.time()]
-
-            # Get future collisions [1, T, W, H, 3] (only one element in the batch)
-            stck_future_preds = self.sigmoid_2D(preds_future).cpu().detach().numpy()
-            stck_future_preds = stck_future_preds[0, :, :, :, :]
-
-            # Use walls and obstacles from init preds
-            # stck_init_preds = sigmoid_2D(preds_init).cpu().detach().numpy()
-            # stck_init_preds = stck_init_preds[0, 0, :, :, :]
-            # stck_future_preds[:, :, :, :2] = np.expand_dims(stck_init_preds[:, :, :2], 0)
-
-            # Convert to uint8 for message 0-254 = prob, 255 = fixed obstacle
-            fixed_preds = np.logical_or(stck_future_preds[:, :, :, :2] > 0.5, axis=-1).astype(np.uint8) * 255
-            moving_preds = (stck_future_preds[:, :, :, 2] * 255).astype(np.uint8)
-            collision_preds = np.maximum(fixed_preds, moving_preds)
-
-            # print('\n************************\n')
-            # print('Timings:')
-            # i = 0
-            # print('Batch ...... {:7.1f} ms'.format(1000*(t[i+1] - t[i])))
-            # i += 1
-            # print('ToGPU ...... {:7.1f} ms'.format(1000*(t[i+1] - t[i])))
-            # i += 1
-            # print('Forward .... {:7.1f} ms'.format(1000*(t[i+1] - t[i])))
-            # i += 1
-            # print('Softmax .... {:7.1f} ms'.format(1000*(t[i+1] - t[i])))
-            # i += 1
-            # print('Preds ...... {:7.1f} ms'.format(1000*(t[i+1] - t[i])))
-            # print('-----------------------')
-            # print('TOTAL  ..... {:7.1f} ms'.format(1000*(t[-1] - t[0])))
-            # print('\n************************\n')
-
-            return point_predictions, batch.points[0].cpu().numpy(), collision_preds
 
     def lidar_callback(self, cloud):
-        
-        #pause the simulation
-        if (PAUSE_SIM):
-            pause.call()
-        rospy.loginfo("Received Point Cloud")
-        
-        t1 = time.time()
+
+        #t1 = time.time()
+        #print('Starting lidar_callback after {:.1f}'.format(1000*(t1 - self.last_t)))
 
         # convert PointCloud2 message to structured numpy array
         labeled_points = pc2.pointcloud2_to_array(cloud)
@@ -703,20 +245,107 @@ class OnlineCollider:
         # convert numpy array to Nx3 sized numpy array of float32
         xyz_points = pc2.get_xyz_points(labeled_points, remove_nans=True, dtype=np.float32)
 
-        # obtain 1xN numpy array of predictions and Nx3 numpy array of sampled points
-        predictions, new_points, collision_preds = self.network_inference(xyz_points)
+        # Safe check
+        if xyz_points.shape[0] < 100:
+            print('{:^35s}'.format('CPU 0 : Corrupted frame not added'), 35*' ', 35*' ')
+            return
 
-        self.publish_collisions(collision_preds, cloud)
+        # # Convert to torch tensor and share memory
+        # xyz_tensor = torch.from_numpy(xyz_points)
+        # xyz_tensor.share_memory_()
 
-        for func in self.pub_funcs:
-            func(new_points, predictions, cloud)
-        t2 = time.time()
-        print("Computation time: {:.3f}s\n".format(t2-t1))
-        rospy.loginfo("Sent Pointcloud")
+        # # Convert header info to shared tensor
+        # frame_t = torch.from_numpy(np.array([cloud.header.stamp.to_sec()], dtype=np.float64))
+        # frame_t.share_memory_()
+            
+        # Update the frame list
+        with self.online_dataset.worker_lock:
 
-        #unpause the simulation
-        if (PAUSE_SIM):
-            unpause.call()
+            if len(self.online_dataset.frame_queue) >= self.config.n_frames:
+                self.online_dataset.frame_queue.pop(0)
+                self.online_dataset.pose_queue.pop(0)
+            self.online_dataset.frame_queue.append((cloud.header.stamp, xyz_points))
+            self.online_dataset.pose_queue.append(None)
+
+        print('{:^35s}'.format('CPU 0 : New frame added'), 35*' ', 35*' ')
+
+        #t2 = time.time()
+        #print('Finished lidar_callback in {:.1f}'.format(1000*(t2 - t1)))
+        #self.last_t = time.time()
+
+        return
+
+
+    def inference_loop(self):
+
+        # No gradient computation here
+        with torch.no_grad():
+
+            # When starting this for loop, one thread will be spawned and creating network 
+            # input while the loop is performing GPU operations.
+            for i, batch in enumerate(self.online_loader):
+
+                #####################
+                # Input preparation #
+                #####################
+
+                t = [time.time()]
+
+                if len(batch.points) < 1:
+                    print(35*' ', 35*' ', '{:^35s}'.format('GPU : Corrupted batch skipped'))
+                    time.sleep(0.5)
+                    continue
+                
+                print(35*' ', 35*' ', '{:^35s}'.format('GPU : Got batch, start inference'))
+
+                # Convert batch to a cuda tensors
+                if 'cuda' in self.device.type:
+                    batch.to(self.device)
+                torch.cuda.synchronize(self.device)
+
+                t += [time.time()]
+                    
+                #####################
+                # Network inference #
+                #####################
+
+                # Forward pass
+                outputs, preds_init, preds_future = self.net(batch, self.config)
+                torch.cuda.synchronize(self.device)
+                
+                t += [time.time()]
+
+                ###########
+                # Outputs #
+                ###########
+                    
+                # Get future collisions [1, T, W, H, 3] (only one element in the batch)
+                stck_future_preds = self.sigmoid_2D(preds_future).cpu().detach().numpy()
+                stck_future_preds = stck_future_preds[0, :, :, :, :]
+
+                # Use walls and obstacles from init preds
+                # stck_init_preds = sigmoid_2D(preds_init).cpu().detach().numpy()
+                # stck_init_preds = stck_init_preds[0, 0, :, :, :]
+                # stck_future_preds[:, :, :, :2] = np.expand_dims(stck_init_preds[:, :, :2], 0)
+
+                # Convert to uint8 for message 0-254 = prob, 255 = fixed obstacle
+                fixed_preds = np.sum(stck_future_preds[:, :, :, :2] > 0.5, axis=-1).astype(np.uint8) * 255
+                moving_preds = (stck_future_preds[:, :, :, 2] * 255).astype(np.uint8)
+                collision_preds = np.maximum(fixed_preds, moving_preds)
+
+                # Publish collision in a custom message
+                #self.publish_collisions(collision_preds, batch.t0, batch.p0, batch.q0)
+                self.publish_collisions_visu(collision_preds, batch.t0, batch.p0, batch.q0)
+
+                t += [time.time()]
+
+
+                # Fake slowing pause
+                time.sleep(2.5)
+                print(35*' ', 35*' ', '{:^35s}'.format('GPU : Inference Done'))
+
+
+        return
 
     def publish_as_laserscan(self, cloud_arr, predictions, original_msg):
         t1 = time.time()
@@ -789,18 +418,15 @@ class OnlineCollider:
         
         self.pub.publish(msg)
  
-    def publish_collisions(self, collision_preds, cloud):
-
-        cloud_origin = np.array([0, 0], dtype=np.float32)
-        cloud_quat = np.array([0, 0, 0, 0], dtype=np.float32)
+    def publish_collisions(self, collision_preds, t0, p0, q0):
 
         # Get origin and orientation
-        origin = cloud_origin - self.config.in_radius / np.sqrt(2)
+        origin0 = p0 #- self.config.in_radius / np.sqrt(2)
 
         # Define header
         msg = VoxGrid()
         msg.header.stamp = rospy.get_rostime()
-        msg.header.frame_id = cloud.header.frame_id
+        msg.header.frame_id = 'map'
 
         # Define message
         msg.depth = collision_preds.shape[0]
@@ -808,14 +434,67 @@ class OnlineCollider:
         msg.height = collision_preds.shape[2]
         msg.dl = self.config.dl_2D
         msg.dt = self.time_resolution
-        msg.origin.x = origin[0]
-        msg.origin.y = origin[1]
-        msg.origin.z = cloud.header.stamp
-        msg.theta = cloud_quat[0]
-        msg.data = collision_preds
+        msg.origin.x = origin0[0]
+        msg.origin.y = origin0[1]
+        msg.origin.z = t0
+        msg.theta = q0[0]
+        msg.data = collision_preds.ravel()
 
+        # Publish
         self.collision_pub.publish(msg)
- 
+
+        return
+
+    def publish_collisions_visu(self, collision_preds, t0, p0, q0):
+        '''
+        0 = invisible
+        1 -> 98 = blue to red
+        99 = cyan
+        100 = yellow
+        101 -> 127 = green
+        128 -> 254 = red to yellow
+        255 = vert/gris
+        '''
+
+        # Get origin and orientation
+        origin0 = p0 - self.config.in_radius / np.sqrt(2)
+
+        # Define header
+        msg = OccupancyGrid()
+        msg.header.stamp = rospy.get_rostime()
+        msg.header.frame_id = 'map'
+
+
+        # Define message meta data
+        msg.info.map_load_time = rospy.Time.from_sec(t0)
+        msg.info.resolution = self.config.dl_2D
+        msg.info.width = collision_preds.shape[1]
+        msg.info.height = collision_preds.shape[2]
+        msg.info.origin.position.x = origin0[0]
+        msg.info.origin.position.y = origin0[1]
+        msg.info.origin.position.z = 0.1
+        #msg.info.origin.orientation.x = q0[0]
+        #msg.info.origin.orientation.y = q0[1]
+        #msg.info.origin.orientation.z = q0[2]
+        #msg.info.origin.orientation.w = q0[3]
+
+
+        # Define message data
+        T = 15
+        data_array = collision_preds[T, :, :].astype(np.float32)
+        mask = collision_preds[T, :, :] > 254
+        mask2 = np.logical_not(mask)
+        data_array[mask2] = data_array[mask2] * 98 / 254
+        data_array[mask2] = np.maximum(1, np.minimum(98, data_array[mask2] * 2.0))
+        data_array[mask] = 101
+        data_array = data_array.astype(np.int8)
+        msg.data = data_array.ravel()
+
+        # Publish
+        self.visu_pub.publish(msg)
+
+        return
+
 
 # ----------------------------------------------------------------------------------------------------------------------
 #
@@ -823,7 +502,24 @@ class OnlineCollider:
 #       \***************/
 #
 
+
 if __name__ == '__main__':
+    #mp.set_start_method('spawn')
+
+    # q = mp.Queue()
+
+    # queue_loader_proc = multiprocessing.Process(name='queue_loader', target=queue_loader, args=(q,))
+    # #d.daemon = True
+
+    # net_proc = multiprocessing.Process(name='net_inf', target=net_inf, args=(q,))
+    # #n.daemon = False
+
+    # queue_loader_proc.start()
+    # print(q.get())    # prints "[42, None, 'hello']"
+    # p.join()
+
+
+    # a = 1/0
 
     # setup testing parameters
 
@@ -840,12 +536,14 @@ if __name__ == '__main__':
     PUBLISH_POINTCLOUD = True
     PUBLISH_LASERSCAN = False
 
-    #########
-    # Start #
-    #########
 
-    tester = OnlineCollider("/velodyne_points")
+    # Setup the collider Class
+    print('\n\n\n\n        ------ Init Collider ------')
+    tester = OnlineCollider()
+    print('OK')
 
-
-
+    # Start network process
+    print('Start inference loop')
+    tester.inference_loop()
+    print('OK')
 

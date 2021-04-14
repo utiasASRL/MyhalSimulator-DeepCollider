@@ -13,10 +13,10 @@ SOURCES = ["../src/cloud/cloud.cpp",
            "../src/cloud/points.cpp",
            "../src/npm_ply/ply_file_in.cc",
            "../src/npm_ply/ply_file_out.cc",
-           "../src/polar_processing/polar_processing.cpp",
-           "wrap_polar.cpp"]
+           "../src/pointmap/pointmap.cpp",
+           "wrap_lidar.cpp"]
 
-module = Extension(name="polar_processing",
+module = Extension(name="lidar_utils",
                    sources=SOURCES,
                    include_dirs=[EIGEN_INCLUDE],
                    extra_compile_args=['-std=c++11',
@@ -24,11 +24,3 @@ module = Extension(name="polar_processing",
 
 
 setup(ext_modules=[module], include_dirs=numpy.distutils.misc_util.get_numpy_include_dirs())
-
-
-
-
-
-
-
-

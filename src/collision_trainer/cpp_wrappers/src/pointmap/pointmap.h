@@ -568,8 +568,452 @@ public:
 
 };
 
+//-------------------------------------------------------------------------------------------
+//
+// PixKey
+// ******
+//
+//	Same as VoxKey but in 2D
+//
+//-------------------------------------------------------------------------------------------
+
+class PixKey
+{
+public:
+	int x;
+	int y;
+
+	PixKey()
+	{
+		x = 0;
+		y = 0;
+	}
+	PixKey(int x0, int y0)
+	{
+		x = x0;
+		y = y0;
+	}
+
+	bool operator==(const PixKey& other) const
+	{
+		return (x == other.x && y == other.y);
+	}
+};
+
+inline PixKey operator+(const PixKey A, const PixKey B)
+{
+	return PixKey(A.x + B.x, A.y + B.y);
+}
+
+inline PixKey operator-(const PixKey A, const PixKey B)
+{
+	return PixKey(A.x - B.x, A.y - B.y);
+}
+
+// Specialization of std:hash function
+namespace std
+{
+	template <>
+	struct hash<PixKey>
+	{
+		std::size_t operator()(const PixKey& k) const
+		{
+			std::size_t ret = 0;
+			hash_combine(ret, k.x, k.y);
+			return ret;
+		}
+	};
+} // namespace std
+
+class LaserRange2D
+{
+
+public:
+
+	// Elements
+	// ********
+
+	// Angle resolution
+	float angle_res;
+
+	// Number of range angles
+	size_t n_angles;
+
+	// Maximum value of the counts
+	int max_count;
+
+	// Container for the ranges
+	vector<float> range_table;
 
 
+	// Methods
+	// *******
+
+	// Constructor
+	LaserRange2D()
+	{
+		angle_res = 0.5 * M_PI / 180.0;
+		n_angles = (size_t)floor(2.0 * M_PI / angle_res) + 1;
+		range_table = vector<float>(n_angles, -1.0);
+	}
+
+	LaserRange2D(const float angle_res0)
+	{
+		angle_res = angle_res0;
+		n_angles = (size_t)floor(2.0 * M_PI / angle_res) + 1;
+		range_table = vector<float>(n_angles, -1.0);
+	}
+
+	LaserRange2D(const size_t n_angles0)
+	{
+		n_angles = n_angles0;
+		angle_res = 2.0 * M_PI / (float)n_angles;
+		range_table = vector<float>(n_angles, -1.0);
+	}
+
+	void compute_from_3D(vector<PointXYZ>& points3D, PointXYZ& center3D, Plane3D& ground_P, float zMin, float zMax)
+	{
+		//////////
+		// Init //
+		//////////
+		//
+		//	This function assumes the point cloud has been aligned in the world coordinates and the ground is close to a flat plane
+		//
+		
+		// Get distances to ground
+		vector<float> distances;
+		ground_P.point_distances(points3D, distances);
+
+
+		///////////////////
+		// Update ranges //
+		///////////////////
+
+		// Loop over 3D points
+		size_t p_i = 0;
+		for (auto& p : points3D)
+		{
+			// Check height limits
+			if (distances[p_i] < zMin || distances[p_i] > zMax)
+			{
+				p_i++;
+				continue;
+			}
+
+			// Add the angle and its corresponding free_range
+			PointXY diff2D(p - center3D);
+			size_t angle_idx = (size_t)floor((atan2(diff2D.y, diff2D.x) + M_PI) / angle_res);
+			float d2 = diff2D.sq_norm();
+			if (range_table[angle_idx] < 0 || d2 < pow(range_table[angle_idx], 2))
+				range_table[angle_idx] = sqrt(d2);
+
+			p_i++;
+		}
+		
+
+		///////////////////////////////
+		// Interpolate the 2D ranges //
+		///////////////////////////////
+
+		// First find the last valid value
+		int last_i, next_i;
+		last_i = range_table.size() - 1;
+		while (last_i >= 0)
+		{
+			if (range_table[last_i] > 0)
+				break;
+			last_i--;
+		}
+
+		// Interpolate
+		next_i = 0;
+		last_i -= range_table.size();
+		while (next_i < range_table.size())
+		{
+			if (range_table[next_i] > 0)
+			{
+				if (last_i < 0)
+				{
+					int diff = next_i - last_i;
+					if (diff > 1)
+					{
+						for (int i = last_i + 1; i < next_i; i++)
+						{
+							int real_i = i;
+							if (real_i < 0)
+								real_i += range_table.size();
+							float t = (i - last_i) / diff;
+							int real_last_i = last_i + range_table.size();
+							range_table[real_i] = t * range_table[real_last_i] + (1-t) * range_table[next_i];
+						}
+					}
+				}
+				else
+				{
+					int diff = next_i - last_i;
+					if (diff > 1)
+					{
+						for (int i = last_i + 1; i < next_i; i++)
+						{
+							float t = (i - last_i) / diff;
+							range_table[i] = t * range_table[last_i] + (1-t) * range_table[next_i];
+						}
+					}
+				}
+				last_i = next_i;
+			}
+			next_i++;
+		}
+	}
+
+	void get_costmap(vector<PointXYZ>& points3D, PointXYZ& center3D, Plane3D& ground_P, float zMin, float zMax, float dl_2D)
+	{
+		//////////
+		// Init //
+		//////////
+		//
+		//	This function assumes the point cloud has been aligned in the world coordinates and the ground is close to a flat plane
+		//
+		
+		// Get distances to ground
+		vector<float> distances;
+		ground_P.point_distances(points3D, distances);
+
+		// Create costmap
+		vector<float> costmap;
+
+
+
+		///////////////////
+		// Update ranges //
+		///////////////////
+
+		// Loop over 3D points
+		size_t p_i = 0;
+		for (auto& p : points3D)
+		{
+			// Check height limits
+			if (distances[p_i] < zMin || distances[p_i] > zMax)
+			{
+				p_i++;
+				continue;
+			}
+
+			// Add the angle and its corresponding free_range
+			PointXY diff2D(p - center3D);
+			size_t angle_idx = (size_t)floor((atan2(diff2D.y, diff2D.x) + M_PI) / angle_res);
+			float d2 = diff2D.sq_norm();
+			if (range_table[angle_idx] < 0 || d2 < pow(range_table[angle_idx], 2))
+				range_table[angle_idx] = sqrt(d2);
+
+			p_i++;
+		}
+		
+
+		///////////////////////////////
+		// Interpolate the 2D ranges //
+		///////////////////////////////
+
+		// First find the last valid value
+		int last_i, next_i;
+		last_i = range_table.size() - 1;
+		while (last_i >= 0)
+		{
+			if (range_table[last_i] > 0)
+				break;
+			last_i--;
+		}
+
+		// Interpolate
+		next_i = 0;
+		last_i -= range_table.size();
+		while (next_i < range_table.size())
+		{
+			if (range_table[next_i] > 0)
+			{
+				if (last_i < 0)
+				{
+					int diff = next_i - last_i;
+					if (diff > 1)
+					{
+						for (int i = last_i + 1; i < next_i; i++)
+						{
+							int real_i = i;
+							if (real_i < 0)
+								real_i += range_table.size();
+							float t = (i - last_i) / diff;
+							int real_last_i = last_i + range_table.size();
+							range_table[real_i] = t * range_table[real_last_i] + (1-t) * range_table[next_i];
+						}
+					}
+				}
+				else
+				{
+					int diff = next_i - last_i;
+					if (diff > 1)
+					{
+						for (int i = last_i + 1; i < next_i; i++)
+						{
+							float t = (i - last_i) / diff;
+							range_table[i] = t * range_table[last_i] + (1-t) * range_table[next_i];
+						}
+					}
+				}
+				last_i = next_i;
+			}
+			next_i++;
+		}
+	}
+
+};
+
+
+
+class FullGrid2D
+{
+public:
+	// Elements
+	// ********
+
+	// Voxel size
+	float dl;
+	vector<float> scores;
+	vector<int> counts;
+	PointXYZ originCorner;
+	size_t sampleNX;
+	size_t sampleNY;
+
+
+	// Methods
+	// *******
+
+	// Constructor
+	FullGrid2D()
+	{
+		dl = 1.0f;
+	}
+	FullGrid2D(const float dl0)
+	{
+		dl = dl0;
+	}
+
+	// Size of the map (number of point/pixel in the map)
+	size_t size() { return scores.size(); }
+
+	// Update map with a set of new points
+	void update_from_3D(vector<PointXYZ>& points3D, PointXYZ& center3D, Plane3D& ground_P, float zMin, float zMax, float radius)
+	{
+
+		// Angle resolution
+		float angle_res = 0.5 * M_PI / 180.0;
+		float inv_angle_res = 1 / angle_res;
+		size_t n_angles = (size_t)floor(2.0 * M_PI / angle_res) + 1;
+		vector<size_t> angle_count(n_angles, 0);
+
+		// Initialize variables
+		float inv_dl = 1 / dl;
+		size_t iX, iY, iZ, mapIdx;
+
+		// Limits of the map
+		PointXYZ minCorner = min_point(points3D);
+		PointXYZ maxCorner = max_point(points3D);
+		originCorner = floor(minCorner * inv_dl) * dl;
+
+		// Dimensions of the grid
+		sampleNX = (size_t)floor((maxCorner.x - originCorner.x) * inv_dl) + 1;
+		sampleNY = (size_t)floor((maxCorner.y - originCorner.y) * inv_dl) + 1;
+
+		// Init containers
+		scores = vector<float>(sampleNX * sampleNY);
+		counts = vector<int>(sampleNX * sampleNY);
+		
+		// Get distances to ground
+		vector<float> distances;
+		ground_P.point_distances(points3D, distances);
+
+		// Get angle idx and dist for each point
+		vector<size_t> angle_inds;
+		vector<float> angle_d2s;
+		angle_inds.reserve(points3D.size());
+		angle_d2s.reserve(points3D.size());
+		size_t p_i = 0;
+		for (auto& p : points3D)
+		{
+			// Check height limits
+			if (distances[p_i] < zMin || distances[p_i] > zMax)
+			{
+				p_i++;
+				continue;
+			}
+			
+			// Add the angle and its corresponding free_range
+			PointXY diff2D(p - center3D);
+			size_t angle_idx = (size_t)floor((atan2(diff2D.y, diff2D.x) + M_PI) * inv_angle_res);
+			float d2 = diff2D.sq_norm();
+
+			// Add angle idx and dist
+			angle_inds.push_back(angle_idx);
+			angle_d2s.push_back(d2);
+			angle_count[angle_idx]++;
+		}
+
+		// Argsort angle dist with their inds
+		vector<size_t> order(angle_inds.size());
+		iota(order.begin(), order.end(), 0);
+		stable_sort(order.begin(), order.end(), [&angle_inds](size_t i1, size_t i2) {return angle_inds[i1] < angle_inds[i2];});
+
+		// Order angles
+		vector<float> angle_d2s_ordered;
+		angle_d2s_ordered.reserve(angle_d2s.size());
+		vector<size_t> angle_starts;
+		int current_angle_idx = -1;
+		size_t c_i = 0;
+		for (auto& i0 : order)
+		{
+			while ((int)angle_inds[i0] > current_angle_idx)
+			{
+				current_angle_idx++;
+				angle_starts.push_back(c_i);
+			}
+
+			angle_d2s_ordered.push_back(angle_d2s[i0]);
+			c_i++;
+		}
+
+		// Loop over grid pixels
+		for (size_t iX = 0; iX < sampleNX; iX++)
+		{	
+			for (size_t iY = 0; iY < sampleNY; iY++)
+			{
+				// Idx in the map containers
+				mapIdx = iX + sampleNX * iY;
+
+				// Position of pixel center in real world
+				PointXYZ p_pixel;
+				p_pixel.x = originCorner.x + ((float)iX + 0.5) * dl;
+				p_pixel.y = originCorner.y + ((float)iY + 0.5) * dl;
+
+				// Add the angle and its corresponding free_range
+				PointXY diff2D(p_pixel - center3D);
+				size_t angle_idx = (size_t)floor((atan2(diff2D.y, diff2D.x) + M_PI) * inv_angle_res);
+				float d2 = diff2D.sq_norm();
+
+				// Get score 
+				for (size_t a_i = angle_starts[angle_idx]; a_i < angle_starts[angle_idx] + angle_count[angle_idx]; a_i++)
+				{
+					if (angle_d2s_ordered[a_i] > d2)
+						scores[mapIdx] += (1.0 - scores[mapIdx]) / ++counts[mapIdx];
+					else
+						scores[mapIdx] += (0.0 - scores[mapIdx]) / ++counts[mapIdx];
+				}
+			}
+		}
+
+		return;
+	}
+
+
+};
 
 
 

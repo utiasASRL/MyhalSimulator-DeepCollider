@@ -1067,5 +1067,3 @@ def save_zoom_img(im_name, img, zoom=1, correction=False, k_background=True):
 
 
 
-
-

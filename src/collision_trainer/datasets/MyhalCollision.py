@@ -39,9 +39,8 @@ import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as scipyR
 from sklearn.neighbors import KDTree
 from slam.PointMapSLAM import PointMap, extract_map_ground, extract_ground
-from slam.cpp_slam import update_pointmap, polar_normals, point_to_map_icp, slam_on_sim_sequence, ray_casting_annot
-from slam.dev_slam import frame_H_to_points, interp_pose, rot_trans_diffs, normals_orientation, \
-    save_trajectory
+from slam.cpp_slam import update_pointmap, polar_normals, point_to_map_icp, slam_on_sim_sequence, ray_casting_annot, get_lidar_visibility
+from slam.dev_slam import frame_H_to_points, interp_pose, rot_trans_diffs, normals_orientation, save_trajectory, RANSAC
 from utils.ply import read_ply, write_ply
 from utils.mayavi_visu import save_future_anim, fast_save_future_anim
 
@@ -57,7 +56,7 @@ from os.path import exists, join, isdir, getsize
 
 
 class MyhalCollisionSlam:
-    
+
     def __init__(self,
                  only_day_1=False,
                  first_day='',
@@ -1779,7 +1778,7 @@ class MyhalCollisionSlam:
             last_t = map_t[0] - 0.1
             remove_inds = []
             for i, t in enumerate(map_t):
-            
+
                 # Handle cases were we have two identical timestamps in map_t
                 if np.abs(t - last_t) < 0.01:
                     remove_inds.append(i)
@@ -1879,7 +1878,7 @@ class MyhalCollisionSlam:
         last_t = map_t[0] - 0.1
         remove_inds = []
         for i, t in enumerate(map_t):
-        
+
             # Handle cases were we have two identical timestamps in map_t
             if np.abs(t - last_t) < 0.01:
                 remove_inds.append(i)
@@ -1896,7 +1895,7 @@ class MyhalCollisionSlam:
 
             frame_names.append(self.map_f_names[f_name_i])
             f_name_i += 1
-            
+
         # Remove the double inds form map_t and map_H
         map_t = np.delete(map_t, remove_inds, axis=0)
         map_H = np.delete(map_H, remove_inds, axis=0)
@@ -2021,9 +2020,9 @@ class MyhalCollisionSlam:
 
             if (t[-1] - last_t > 5.0):
                 print('Reproj {:s} {:5d} --- {:5.1f}%% at {:.1f} fps'.format(self.map_day,
-                                                                            i + 1,
-                                                                            100 * (i + 1) / N,
-                                                                            fps))
+                                                                             i + 1,
+                                                                             100 * (i + 1) / N,
+                                                                             fps))
                 last_t = t[-1]
         print('OK')
 
@@ -2236,12 +2235,40 @@ class MyhalCollisionSlam:
         # STEP 0 - Init
         ###############
 
+        # Classes
         print('Start Collision Annotation')
         label_names = {0: 'uncertain',
                        1: 'ground',
                        2: 'still',
                        3: 'longT',
                        4: 'shortT'}
+
+                        
+        # Folder where the incrementally updated map is stored
+        map_folder = join(self.data_path, 'slam_offline', self.map_day)
+
+        # List of the updated maps
+        map_names = [f for f in listdir(map_folder) if f.startswith('map_update_')]
+
+        # Get the latest update of the map
+        map_names = np.sort(map_names)
+        last_map = map_names[-1]
+        last_update_i = int(last_map[:-4].split('_')[-1])
+
+        # Load map
+        print('Load last update')
+        data = read_ply(join(map_folder, last_map))
+        map_points = np.vstack((data['x'], data['y'], data['z'])).T
+        map_normals = np.vstack((data['nx'], data['ny'], data['nz'])).T
+        map_scores = data['scores']
+        map_counts = data['counts']
+        print('OK')
+
+        # Get ground
+        vertical_angle = np.arccos(np.abs(np.clip(map_normals[:, 2], -1.0, 1.0)))
+        plane_mask = vertical_angle < 10.0 * np.pi / 180
+        plane_P, plane_N, _ = RANSAC(map_points[plane_mask], threshold_in=0.1)
+        ground_plane = np.append(plane_N, np.dot(plane_N, plane_P))
 
         ##############
         # LOOP ON DAYS
@@ -2281,7 +2308,7 @@ class MyhalCollisionSlam:
             last_t = map_t[0] - 0.1
             remove_inds = []
             for i, t in enumerate(map_t):
-            
+
                 # Handle cases were we have two identical timestamps in map_t
                 if np.abs(t - last_t) < 0.01:
                     remove_inds.append(i)
@@ -2332,7 +2359,6 @@ class MyhalCollisionSlam:
 
                 t = [time.time()]
 
-
                 # Load points with annotation
                 ply_name = join(frame_folder, f_name.split('/')[-1])
                 data = read_ply(ply_name)
@@ -2342,6 +2368,23 @@ class MyhalCollisionSlam:
                 # Apply transf
                 world_pts = np.hstack((f_points, np.ones_like(f_points[:, :1])))
                 world_pts = np.matmul(world_pts, correct_H[i].T).astype(np.float32)[:, :3]
+
+                # # Get visibility
+                # lidar_ranges = get_lidar_visibility(world_pts,
+                #                                     correct_H[i][:3, 3].astype(np.float32),
+                #                                     ground_plane,
+                #                                     n_angles=720,
+                #                                     z_min=0.4,
+                #                                     z_max=1.5,
+                #                                     dl_2D=0.12)
+
+                # print(lidar_ranges.shape)
+                # print(lidar_ranges.dtype)
+                # print(np.min(lidar_ranges), np.max(lidar_ranges))
+                # import matplotlib.pyplot as plt
+                # plt.imshow(lidar_ranges)
+                # plt.show()
+                # a = 1/0
 
                 # Do not use ground and uncertain points
                 flat_pts = world_pts[f_annot > 1.5, :]
@@ -2562,8 +2605,7 @@ class MyhalCollisionDataset(PointCloudDataset):
         self.epoch_inds.share_memory_()
         self.epoch_labels.share_memory_()
 
-        self.worker_waiting = torch.tensor(
-            [0 for _ in range(config.input_threads)], dtype=torch.int32)
+        self.worker_waiting = torch.tensor([0 for _ in range(config.input_threads)], dtype=torch.int32)
         self.worker_waiting.share_memory_()
         self.worker_lock = Lock()
 
@@ -2770,204 +2812,23 @@ class MyhalCollisionDataset(PointCloudDataset):
 
             t += [time.time()]
 
-
             ##########################
             # Compute 3D-2D projection
             ##########################
-            # C++ wrappers to get the projections indexes (with shadow pools)
-            # Temporarily use the 3D neighbors wrappers
 
-            # Max number of points pooled to a grid cell
-            max_2D_pools = 20
+            # Compute projection indices and future images
+            pools_2D, future_imgs = self.get_input_2D(in_pts, in_fts, in_lbls, s_ind, f_ind, p0, R, scale)
+            #pools_2D = self.get_input_2D_cpp()
 
-            # Project points on 2D plane
-            support_pts = np.copy(in_pts)
-            support_pts[:, 2] *= 0
+            # Check ifFailed (probably because the cloud had 0 points)
+            if pools_2D is None:
+                continue
 
-            # Create grid
-            grid_ticks = np.arange(-self.config.in_radius / np.sqrt(2),
-                                   self.config.in_radius / np.sqrt(2),
-                                   self.config.dl_2D)
-            xx, yy = np.meshgrid(grid_ticks, grid_ticks)
-            L_2D = xx.shape[0]
-            pool_points = np.vstack((np.ravel(xx), np.ravel(yy), np.ravel(yy) * 0)).astype(np.float32).T
-
-            # Get pooling indices
-            pool_inds = batch_neighbors(pool_points,
-                                        support_pts,
-                                        [pool_points.shape[0]],
-                                        [support_pts.shape[0]],
-                                        self.config.dl_2D/np.sqrt(2))
-
-            # Remove excedent => get to shape [L_2D*L_2D, max_2D_pools]
-            if pool_inds.shape[1] < max_2D_pools:
-                diff_d = max_2D_pools - pool_inds.shape[1]
-                pool_inds = np.pad(pool_inds,
-                                   ((0, 0), (0, diff_d)),
-                                   'constant',
-                                   constant_values=support_pts.shape[0])
-
+            # Get current visible pixels in the future images
+            if self.config.use_visibility:
+                future_visible_mask = self.get_future_visibility(in_pts, in_fts, in_lbls, s_ind, f_ind, p0, R, scale)
             else:
-                pool_inds = pool_inds[:, :max_2D_pools]
-
-            # Reshape into 2D grid
-            pools_2D = np.reshape(pool_inds, (L_2D, L_2D, max_2D_pools))
-
-
-            #########################
-            # Load groundtruth future
-            #########################
-
-            # Path of points and labels
-            if self.set == 'test':
-                future_imgs = np.zeros((0, 0, 0), dtype=np.float32)
-            else:
-
-                # Get groundtruth in 2D points format
-                seq_path = join(self.original_path, 'collisions', self.sequences[s_ind])
-                gt_file = join(seq_path, self.frames[s_ind][f_ind] + '_2D.ply')
-
-                # Read points
-                data = read_ply(gt_file)
-                pts_2D = np.vstack((data['x'], data['y'])).T
-                times_2D = data['t']
-                labels_2D = data['classif']
-
-                # Center on p0 and apply same augmentation
-                pts_2D = (pts_2D - p0[:2]).astype(np.float32)
-                pts_2D = np.hstack((pts_2D, np.zeros_like(pts_2D[:, :1])))
-                pts_2D = np.sum(np.expand_dims(pts_2D, 2) * R, axis=1) * scale
-
-                # For each time get the closest annotation
-                timestamps = np.linspace(0, self.config.T_2D, self.config.n_2D_layers + 1)
-                future_dt = (timestamps[1] - timestamps[0]) / 2
-                future_imgs = []
-                try:
-                    for future_t in timestamps:
-
-                        # Valid points for this timestamps are in the time range dt
-                        # TODO: Here different valid times for different classes
-                        valid_mask = np.abs(times_2D - future_t) < future_dt
-                        extension = 1
-                        while np.sum(valid_mask) < 1 and extension < 5:
-                            extension += 1
-                            valid_mask = np.abs(times_2D - future_t) < future_dt * extension
-
-                        valid_pts = pts_2D[valid_mask, :]
-                        valid_labels = labels_2D[valid_mask]
-                        valid_times = times_2D[valid_mask]
-
-                        # Get pooling indices to image
-                        pool2D_inds = batch_neighbors(pool_points,
-                                                      valid_pts,
-                                                      [pool_points.shape[0]],
-                                                      [valid_pts.shape[0]],
-                                                      self.config.dl_2D / np.sqrt(2))
-
-                        # Pool labels (shape = [L_2D*L_2D, max_neighb])
-                        valid_labels = np.hstack((valid_labels, np.ones_like(valid_labels[:1] * -1)))
-                        future_labels = valid_labels[pool2D_inds]
-                        future_2 = np.sum((future_labels == self.name_to_label['still']).astype(np.float32), axis=1)
-                        future_3 = np.sum((future_labels == self.name_to_label['longT']).astype(np.float32), axis=1)
-                        future_4 = np.sum((future_labels == self.name_to_label['shortT']).astype(np.float32), axis=1)
-
-                        # Reshape into 2D grid
-                        future_2 = np.reshape(future_2, (L_2D, L_2D))
-                        future_3 = np.reshape(future_3, (L_2D, L_2D))
-                        future_4 = np.reshape(future_4, (L_2D, L_2D))
-                        future_imgs.append(np.stack((future_2, future_3, future_4), axis=2))
-
-                except RuntimeError:
-                    # Temporary bug fix when no neighbors at all we just skip this one
-                    continue
-
-                # Stack future images
-                future_imgs = np.stack(future_imgs, 0)
-
-                # For permanent and long term objects, merge all futures
-                future_imgs[:, :, :, 0] = np.sum(future_imgs[:, :, :, 0], axis=0, keepdims=True) / (self.config.n_2D_layers + 1)
-                future_imgs[:, :, :, 1] = np.sum(future_imgs[:, :, :, 1], axis=0, keepdims=True) / (self.config.n_2D_layers + 1)
-
-                # Hardcoded value of 10 shortT points
-                future_imgs[:, :, :, 2] = np.clip(future_imgs[:, :, :, 2], 0, 10) / 10
-
-                # Normalize all class future
-                for i in range(future_imgs.shape[-1]):
-                    if np.max(future_imgs[:, :, :, i]) > 1.0:
-                        future_imgs[:, :, :, i] = future_imgs[:, :, :, i] / (np.max(future_imgs[:, :, :, i]) + 1e-9)
-
-                input_classes = np.sum(future_imgs[0, :, :, :], axis=(0, 1)) > 0
-
-                ###########################################################################################
-                #DEBUG
-                debug = self.config.input_threads == 0
-                if debug:
-                    print('Precesnce of each input class: ', input_classes)
-                    debug = debug and np.all(input_classes) and 4 < s_ind < 8
-                if debug:
-                    f1 = np.zeros_like(support_pts[:, 0])
-                    f1 = np.hstack((f1, np.zeros_like(f1[:1])))
-                    NN = 300
-                    rand_neighbs = np.random.choice(pool_inds.shape[0], size=NN)
-                    for rd_i in rand_neighbs:
-                        f1[pool_inds[rd_i]] = rd_i
-
-                    print(support_pts.shape, f1.shape, in_fts.shape, in_lbls.shape)
-                    write_ply('results/t_supps.ply',
-                              [support_pts, f1[:-1], in_fts[:, -1], in_lbls],
-                              ['x', 'y', 'z', 'f1', 'f2', 'classif'])
-
-                              
-                    print(in_pts.shape, f1.shape, in_fts.shape, in_lbls.shape)
-                    write_ply('results/t_supps3D.ply',
-                              [in_pts, f1[:-1], in_fts[:, -1], in_lbls],
-                              ['x', 'y', 'z', 'f1', 'f2', 'classif'])
-
-                    n_neighbs = np.sum((pool_inds < support_pts.shape[0]).astype(np.float32), axis=1)
-                    print(pool_points.shape, n_neighbs.shape)
-                    write_ply('results/t_pools.ply',
-                              [pool_points, n_neighbs],
-                              ['x', 'y', 'z', 'n_n'])
-
-                    import matplotlib.pyplot as plt
-                    from matplotlib.animation import FuncAnimation
-                    pp = []
-                    for i in range(self.config.n_2D_layers + 1):
-                        pool_points[:, 2] = timestamps[i]
-                        pp.append(np.copy(pool_points))
-                    pp = np.concatenate(pp, axis=0)
-                    print(pp.shape, np.ravel(future_imgs[:, :, :, 2]).shape)
-                    write_ply('results/gt_pools.ply',
-                              [pp, np.ravel(future_imgs[:, :, :, 2])],
-                              ['x', 'y', 'z', 'f1'])
-                              
-                    print(pts_2D.shape, times_2D.shape, labels_2D.shape)
-                    write_ply('results/gt_pts.ply',
-                              [pts_2D[:, :2], times_2D, labels_2D],
-                              ['x', 'y', 't', 'f1'])
-
-                    # Function that saves future images as gif
-                    fig1, anim = save_future_anim('results/gt_anim.gif', future_imgs)
-                    fast_save_future_anim('results/gt_anim.gif', future_imgs, zoom=10)
-
-                    fig2, ax = plt.subplots()
-                    n_neighbs = np.sum((pools_2D < support_pts.shape[0]).astype(np.float32), axis=-1)
-                    n_neighbs = n_neighbs / max_2D_pools
-                    imgplot = plt.imshow(n_neighbs)
-                    plt.savefig('results/t_input_proj.png')
-                    plt.show()
-
-
-
-                ###########################################################################################
-
-                
-                # TODO: We should also predict ground and hidden space so that the network undestands why people disapear
-                #       Or instead of predicting it, we can just give it to the network when performing 2D projection
-                #       OR EVEN BETTER: ignore pixel from unknown space when performing loss????
-                
-
-
+                future_visible_mask = None
 
             # Stack batch
             p_list += [in_pts]
@@ -3063,82 +2924,55 @@ class MyhalCollisionDataset(PointCloudDataset):
             ti = 0
             N = 9
             mess = 'Init ...... {:5.1f}ms /'
-            loop_times = [
-                1000 * (t[ti + N * i + 1] - t[ti + N * i])
-                for i in range(len(stack_lengths))
-            ]
+            loop_times = [1000 * (t[ti + N * i + 1] - t[ti + N * i]) for i in range(len(stack_lengths))]
             for dt in loop_times:
                 mess += ' {:5.1f}'.format(dt)
             print(mess.format(np.sum(loop_times)))
             ti += 1
             mess = 'Lock ...... {:5.1f}ms /'
-            loop_times = [
-                1000 * (t[ti + N * i + 1] - t[ti + N * i])
-                for i in range(len(stack_lengths))
-            ]
+            loop_times = [1000 * (t[ti + N * i + 1] - t[ti + N * i]) for i in range(len(stack_lengths))]
             for dt in loop_times:
                 mess += ' {:5.1f}'.format(dt)
             print(mess.format(np.sum(loop_times)))
             ti += 1
             mess = 'Init ...... {:5.1f}ms /'
-            loop_times = [
-                1000 * (t[ti + N * i + 1] - t[ti + N * i])
-                for i in range(len(stack_lengths))
-            ]
+            loop_times = [1000 * (t[ti + N * i + 1] - t[ti + N * i]) for i in range(len(stack_lengths))]
             for dt in loop_times:
                 mess += ' {:5.1f}'.format(dt)
             print(mess.format(np.sum(loop_times)))
             ti += 1
             mess = 'Load ...... {:5.1f}ms /'
-            loop_times = [
-                1000 * (t[ti + N * i + 1] - t[ti + N * i])
-                for i in range(len(stack_lengths))
-            ]
+            loop_times = [1000 * (t[ti + N * i + 1] - t[ti + N * i]) for i in range(len(stack_lengths))]
             for dt in loop_times:
                 mess += ' {:5.1f}'.format(dt)
             print(mess.format(np.sum(loop_times)))
             ti += 1
             mess = 'Subs ...... {:5.1f}ms /'
-            loop_times = [
-                1000 * (t[ti + N * i + 1] - t[ti + N * i])
-                for i in range(len(stack_lengths))
-            ]
+            loop_times = [1000 * (t[ti + N * i + 1] - t[ti + N * i]) for i in range(len(stack_lengths))]
             for dt in loop_times:
                 mess += ' {:5.1f}'.format(dt)
             print(mess.format(np.sum(loop_times)))
             ti += 1
             mess = 'Drop ...... {:5.1f}ms /'
-            loop_times = [
-                1000 * (t[ti + N * i + 1] - t[ti + N * i])
-                for i in range(len(stack_lengths))
-            ]
+            loop_times = [1000 * (t[ti + N * i + 1] - t[ti + N * i]) for i in range(len(stack_lengths))]
             for dt in loop_times:
                 mess += ' {:5.1f}'.format(dt)
             print(mess.format(np.sum(loop_times)))
             ti += 1
             mess = 'Reproj .... {:5.1f}ms /'
-            loop_times = [
-                1000 * (t[ti + N * i + 1] - t[ti + N * i])
-                for i in range(len(stack_lengths))
-            ]
+            loop_times = [1000 * (t[ti + N * i + 1] - t[ti + N * i]) for i in range(len(stack_lengths))]
             for dt in loop_times:
                 mess += ' {:5.1f}'.format(dt)
             print(mess.format(np.sum(loop_times)))
             ti += 1
             mess = 'Augment ... {:5.1f}ms /'
-            loop_times = [
-                1000 * (t[ti + N * i + 1] - t[ti + N * i])
-                for i in range(len(stack_lengths))
-            ]
+            loop_times = [1000 * (t[ti + N * i + 1] - t[ti + N * i]) for i in range(len(stack_lengths))]
             for dt in loop_times:
                 mess += ' {:5.1f}'.format(dt)
             print(mess.format(np.sum(loop_times)))
             ti += 1
             mess = 'Stack ..... {:5.1f}ms /'
-            loop_times = [
-                1000 * (t[ti + N * i + 1] - t[ti + N * i])
-                for i in range(len(stack_lengths))
-            ]
+            loop_times = [1000 * (t[ti + N * i + 1] - t[ti + N * i]) for i in range(len(stack_lengths))]
             for dt in loop_times:
                 mess += ' {:5.1f}'.format(dt)
             print(mess.format(np.sum(loop_times)))
@@ -3174,6 +3008,206 @@ class MyhalCollisionDataset(PointCloudDataset):
 
         return [self.config.num_layers] + input_list
 
+    def get_input_2D(self, in_pts, in_fts, in_lbls, s_ind, f_ind, p0, R, scale):
+
+        # C++ wrappers to get the projections indexes (with shadow pools)
+        # Temporarily use the 3D neighbors wrappers
+
+        # Max number of points pooled to a grid cell
+        max_2D_pools = 20
+
+        # Project points on 2D plane
+        support_pts = np.copy(in_pts)
+        support_pts[:, 2] *= 0
+
+        # Create grid
+        grid_ticks = np.arange(-self.config.in_radius / np.sqrt(2),
+                               self.config.in_radius / np.sqrt(2),
+                               self.config.dl_2D)
+        xx, yy = np.meshgrid(grid_ticks, grid_ticks)
+        L_2D = xx.shape[0]
+        pool_points = np.vstack((np.ravel(xx), np.ravel(yy), np.ravel(yy) * 0)).astype(np.float32).T
+
+        # Get pooling indices
+        pool_inds = batch_neighbors(pool_points,
+                                    support_pts,
+                                    [pool_points.shape[0]],
+                                    [support_pts.shape[0]],
+                                    self.config.dl_2D / np.sqrt(2))
+
+        # Remove excedent => get to shape [L_2D*L_2D, max_2D_pools]
+        if pool_inds.shape[1] < max_2D_pools:
+            diff_d = max_2D_pools - pool_inds.shape[1]
+            pool_inds = np.pad(pool_inds,
+                               ((0, 0), (0, diff_d)),
+                               'constant',
+                               constant_values=support_pts.shape[0])
+
+        else:
+            pool_inds = pool_inds[:, :max_2D_pools]
+
+        # Reshape into 2D grid
+        pools_2D = np.reshape(pool_inds, (L_2D, L_2D, max_2D_pools))
+
+        #########################
+        # Load groundtruth future
+        #########################
+
+        # Path of points and labels
+        if self.set == 'test':
+            future_imgs = np.zeros((0, 0, 0), dtype=np.float32)
+        else:
+
+            # Get groundtruth in 2D points format
+            seq_path = join(self.original_path, 'collisions', self.sequences[s_ind])
+            gt_file = join(seq_path, self.frames[s_ind][f_ind] + '_2D.ply')
+
+            # Read points
+            data = read_ply(gt_file)
+            pts_2D = np.vstack((data['x'], data['y'])).T
+            times_2D = data['t']
+            labels_2D = data['classif']
+
+            # Center on p0 and apply same augmentation
+            pts_2D = (pts_2D - p0[:2]).astype(np.float32)
+            pts_2D = np.hstack((pts_2D, np.zeros_like(pts_2D[:, :1])))
+            pts_2D = np.sum(np.expand_dims(pts_2D, 2) * R, axis=1) * scale
+
+            # For each time get the closest annotation
+            timestamps = np.linspace(0, self.config.T_2D, self.config.n_2D_layers + 1)
+            future_dt = (timestamps[1] - timestamps[0]) / 2
+            future_imgs = []
+            try:
+                for future_t in timestamps:
+
+                    # Valid points for this timestamps are in the time range dt
+                    # TODO: Here different valid times for different classes
+                    valid_mask = np.abs(times_2D - future_t) < future_dt
+                    extension = 1
+                    while np.sum(valid_mask) < 1 and extension < 5:
+                        extension += 1
+                        valid_mask = np.abs(times_2D - future_t) < future_dt * extension
+
+                    valid_pts = pts_2D[valid_mask, :]
+                    valid_labels = labels_2D[valid_mask]
+                    valid_times = times_2D[valid_mask]
+
+                    # Get pooling indices to image
+                    pool2D_inds = batch_neighbors(pool_points,
+                                                  valid_pts,
+                                                  [pool_points.shape[0]],
+                                                  [valid_pts.shape[0]],
+                                                  self.config.dl_2D / np.sqrt(2))
+
+                    # Pool labels (shape = [L_2D*L_2D, max_neighb])
+                    valid_labels = np.hstack((valid_labels, np.ones_like(valid_labels[:1] * -1)))
+                    future_labels = valid_labels[pool2D_inds]
+                    future_2 = np.sum((future_labels == self.name_to_label['still']).astype(np.float32), axis=1)
+                    future_3 = np.sum((future_labels == self.name_to_label['longT']).astype(np.float32), axis=1)
+                    future_4 = np.sum((future_labels == self.name_to_label['shortT']).astype(np.float32), axis=1)
+
+                    # Reshape into 2D grid
+                    future_2 = np.reshape(future_2, (L_2D, L_2D))
+                    future_3 = np.reshape(future_3, (L_2D, L_2D))
+                    future_4 = np.reshape(future_4, (L_2D, L_2D))
+                    future_imgs.append(np.stack((future_2, future_3, future_4), axis=2))
+
+            except RuntimeError:
+                # Temporary bug fix when no neighbors at all we just skip this one
+                return None, None
+
+            # Stack future images
+            future_imgs = np.stack(future_imgs, 0)
+
+            # For permanent and long term objects, merge all futures
+            future_imgs[:, :, :, 0] = np.sum(future_imgs[:, :, :, 0], axis=0, keepdims=True) / (self.config.n_2D_layers + 1)
+            future_imgs[:, :, :, 1] = np.sum(future_imgs[:, :, :, 1], axis=0, keepdims=True) / (self.config.n_2D_layers + 1)
+
+            # Hardcoded value of 10 shortT points
+            future_imgs[:, :, :, 2] = np.clip(future_imgs[:, :, :, 2], 0, 10) / 10
+
+            # Normalize all class future
+            for i in range(future_imgs.shape[-1]):
+                if np.max(future_imgs[:, :, :, i]) > 1.0:
+                    future_imgs[:, :, :, i] = future_imgs[:, :, :, i] / (np.max(future_imgs[:, :, :, i]) + 1e-9)
+
+            input_classes = np.sum(future_imgs[0, :, :, :], axis=(0, 1)) > 0
+
+            ###########################################################################################
+            #DEBUG
+            debug = self.config.input_threads == 0 and False
+            if debug:
+                print('Precesnce of each input class: ', input_classes)
+                debug = debug and np.all(input_classes) and 4 < s_ind < 8
+            if debug:
+                f1 = np.zeros_like(support_pts[:, 0])
+                f1 = np.hstack((f1, np.zeros_like(f1[:1])))
+                NN = 300
+                rand_neighbs = np.random.choice(pool_inds.shape[0], size=NN)
+                for rd_i in rand_neighbs:
+                    f1[pool_inds[rd_i]] = rd_i
+
+                print(support_pts.shape, f1.shape, in_fts.shape, in_lbls.shape)
+                write_ply('results/t_supps.ply',
+                          [support_pts, f1[:-1], in_fts[:, -1], in_lbls],
+                          ['x', 'y', 'z', 'f1', 'f2', 'classif'])
+
+                print(in_pts.shape, f1.shape, in_fts.shape, in_lbls.shape)
+                write_ply('results/t_supps3D.ply',
+                          [in_pts, f1[:-1], in_fts[:, -1], in_lbls],
+                          ['x', 'y', 'z', 'f1', 'f2', 'classif'])
+
+                n_neighbs = np.sum((pool_inds < support_pts.shape[0]).astype(np.float32), axis=1)
+                print(pool_points.shape, n_neighbs.shape)
+                write_ply('results/t_pools.ply',
+                          [pool_points, n_neighbs],
+                          ['x', 'y', 'z', 'n_n'])
+
+                import matplotlib.pyplot as plt
+                from matplotlib.animation import FuncAnimation
+                pp = []
+                for i in range(self.config.n_2D_layers + 1):
+                    pool_points[:, 2] = timestamps[i]
+                    pp.append(np.copy(pool_points))
+                pp = np.concatenate(pp, axis=0)
+                print(pp.shape, np.ravel(future_imgs[:, :, :, 2]).shape)
+                write_ply('results/gt_pools.ply',
+                          [pp, np.ravel(future_imgs[:, :, :, 2])],
+                          ['x', 'y', 'z', 'f1'])
+
+                print(pts_2D.shape, times_2D.shape, labels_2D.shape)
+                write_ply('results/gt_pts.ply',
+                          [pts_2D[:, :2], times_2D, labels_2D],
+                          ['x', 'y', 't', 'f1'])
+
+                # Function that saves future images as gif
+                fig1, anim = save_future_anim('results/gt_anim.gif', future_imgs)
+                fast_save_future_anim('results/gt_anim.gif', future_imgs, zoom=10)
+
+                fig2, ax = plt.subplots()
+                n_neighbs = np.sum((pools_2D < support_pts.shape[0]).astype(np.float32), axis=-1)
+                n_neighbs = n_neighbs / max_2D_pools
+                imgplot = plt.imshow(n_neighbs)
+                plt.savefig('results/t_input_proj.png')
+                plt.show()
+
+        return pools_2D, future_imgs
+
+    def get_future_visibility(self, in_pts, in_fts, in_lbls, s_ind, f_ind, p0, R, scale):
+
+        # Get future poses
+        future_poses = [self.poses[s_ind][f_ind + i] for i in range(self.config.n_2D_layers + 1)]
+
+
+        
+
+
+    
+
+
+        return
+
+
     def load_calib_poses(self):
         """
         load calib poses and times.
@@ -3204,7 +3238,6 @@ class MyhalCollisionDataset(PointCloudDataset):
                 annot_frames = annot_frames[order]
                 pose_dict = {k: v for k, v in zip(annot_frames, transform_list)}
                 self.poses.append([pose_dict[f] for f in self.frames[s_ind]])
-
 
         else:
 

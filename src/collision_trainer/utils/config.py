@@ -72,6 +72,9 @@ class Config:
     apply_3D_loss = True
     frozen_layers = []
 
+    # Use visibility mask for training
+    use_visibility = False
+
     ##################
     # Input parameters
     ##################
@@ -340,6 +343,7 @@ class Config:
                                'detach_2D',
                                'shared_2D',
                                'apply_3D_loss',
+                               'use_visibility',
                                'init_2D_levels',
                                'init_2D_resnets',
                                'prop_2D_resnets',

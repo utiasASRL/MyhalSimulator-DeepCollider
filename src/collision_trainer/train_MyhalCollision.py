@@ -70,7 +70,7 @@ class MyhalCollisionConfig(Config):
     dataset_task = ''
 
     # Number of CPU threads for the input pipeline
-    input_threads = 15
+    input_threads = 16
 
     #########################
     # Architecture definition
@@ -110,8 +110,8 @@ class MyhalCollisionConfig(Config):
 
     # Power of the loss for the 2d predictions (use smaller prop loss when shared weights)
     power_2D_init_loss = 1.0
-    power_2D_prop_loss = 0.5
-    neg_pos_ratio = 3.0
+    power_2D_prop_loss = 1.0
+    neg_pos_ratio = 6.0
 
     # Specification of the 2D networks composition
     init_2D_levels = 3
@@ -132,20 +132,23 @@ class MyhalCollisionConfig(Config):
     apply_3D_loss = True
     #frozen_layers = ['encoder_blocks', 'decoder_blocks', 'head_mlp', 'head_softmax']
 
+    # Use visibility mask for training
+    use_visibility = False
+
     ###################
     # KPConv parameters
     ###################
 
     # Radius of the input sphere
-    in_radius = 6.0
-    val_radius = 6.0
+    in_radius = 8.0
+    val_radius = 8.0
     n_frames = 3
     max_in_points = -1
     max_val_points = -1
 
     # Number of batch
-    batch_num = 6
-    val_batch_num = 6
+    batch_num = 5
+    val_batch_num = 1
 
     # Number of kernel points
     num_kernel_points = 15
@@ -210,7 +213,7 @@ class MyhalCollisionConfig(Config):
     checkpoint_gap = 50
 
     # Augmentations
-    augment_scale_anisotropic = True
+    augment_scale_anisotropic = False
     augment_symmetries = [False, False, False]
     augment_rotation = 'vertical'
     augment_scale_min = 0.9
@@ -243,7 +246,7 @@ if __name__ == '__main__':
     ############################
 
     # Set which gpu is going to be used
-    GPU_ID = '1'
+    GPU_ID = '0'
 
     # Set GPU visible device
     os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
@@ -344,20 +347,34 @@ if __name__ == '__main__':
                            '2021-03-26-21-34-51',
                            '2021-03-26-22-20-38']
 
+    train_days_RandBounce = ['2021-04-12-15-10-19',
+                             '2021-04-12-15-34-52',
+                             '2021-04-12-16-22-40',
+                             '2021-04-12-17-20-23',
+                             '2021-04-12-17-42-45',
+                             '2021-04-12-18-25-47',
+                             '2021-04-12-19-08-58',
+                             '2021-04-12-19-32-40',
+                             '2021-04-12-20-10-47',
+                             '2021-04-12-21-13-04',
+                             '2021-04-12-21-39-16',
+                             '2021-04-12-22-13-09',
+                             '2021-04-12-22-59-57',
+                             '2021-04-12-23-28-00']
 
     ######################
     # Automatic Annotation
     ######################
 
     # Choose the dataset
-    train_days = np.array(train_days_RandFlow)
-    val_inds = [0, 1]
+    train_days = np.array(train_days_RandBounce)
+    val_inds = [0, 1, 2]
     train_inds = [i for i in range(len(train_days)) if i not in val_inds]
 
     # Check if we need to redo annotation (only if there is no video)
     redo_annot = False
     for day in train_days:
-        annot_path = join('../../../Myhal_Simulation/annotated_frames', day)
+        annot_path = join('../../../Myhal_Simulation/collisions', day)
         if not exists(annot_path):
             redo_annot = True
             break
