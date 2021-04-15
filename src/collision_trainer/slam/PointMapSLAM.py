@@ -59,15 +59,14 @@ class PointMap:
         self.planes = None
         self.plane_inds = None
 
-
     def update(self, points, normals, scores):
 
         self.points, self.normals, self.scores, self.counts = update_pointmap(points, normals, scores,
-                                                                               map_points=self.points,
-                                                                               map_normals=self.normals,
-                                                                               map_scores=self.scores,
-                                                                               map_counts=self.counts,
-                                                                               map_dl=self.dl)
+                                                                              map_points=self.points,
+                                                                              map_normals=self.normals,
+                                                                              map_scores=self.scores,
+                                                                              map_counts=self.counts,
+                                                                              map_dl=self.dl)
 
     def update_movable_old(self, points, R, T):
 
@@ -103,8 +102,8 @@ class PointMap:
         dr_threshold1 = 0.05
         dr_threshold2 = 0.15
 
-        polar_points[:, 2] *= 1/phi_res_ratio
-        polar_map[:, 2] *= 1/phi_res_ratio
+        polar_points[:, 2] *= 1 / phi_res_ratio
+        polar_map[:, 2] *= 1 / phi_res_ratio
 
         # Compute voxel indice for each frame point
         grid_indices = (np.floor(polar_points[:, 1:] / theta_res)).astype(int)
@@ -173,7 +172,6 @@ class PointMap:
         # write_ply('ttt_rtp_img.ply',
         #           [frame_img, frame_img[:, 2]],
         #           ['x', 'y', 'z', 'phi'])
-
 
         return
 
@@ -261,11 +259,9 @@ class PointMap:
                 features[self.plane_inds == plane_i] = self.plane_areas[-1]
             print('Done')
 
-
             write_ply('cc_region_growing_map.ply',
                       [self.points, self.normals, self.plane_inds, features],
                       ['x', 'y', 'z', 'nx', 'ny', 'nz', 'planes', 'area'])
-
 
         ############################
         # Detect planes in the frame
@@ -295,10 +291,7 @@ class PointMap:
                   [frame_pts, frame_normals, plane_inds, features],
                   ['x', 'y', 'z', 'nx', 'ny', 'nz', 'planes', 'area'])
 
-
-
-
-        a = 1/0
+        a = 1 / 0
         # TODO:
         #  Get planes from the map too
         #  Then do the association
@@ -308,10 +301,7 @@ class PointMap:
         #     - Loop on all possible asso and get the best candidate
         #   => Rank candidates by their relative size (the closest to the lidar plane size as long as it is bigger)
 
-
-
         print(planes.shape, planes.dtype)
-
 
         return planes, plane_inds
 
@@ -390,7 +380,7 @@ def get_frame_slices(points, phi0, last_H, new_H, n_slices):
     slices_phi = []
     slices_points = []
     for i, l1 in enumerate(slices_limits[:-1]):
-        l2 = slices_limits[i+1]
+        l2 = slices_limits[i + 1]
         slices_phi.append((l2 + l1) / 2)
         slice_mask = np.logical_and(phi > l1, phi < l2)
         slices_points.append(points[slice_mask, :])
@@ -511,7 +501,6 @@ def pointmap_slam_v0debug(verbose=2):
 
             t += [time.time()]
 
-
             if i < 1:
                 world_H = transform_list[i]
             else:
@@ -519,7 +508,7 @@ def pointmap_slam_v0debug(verbose=2):
                                                           pointmap.points,
                                                           pointmap.normals,
                                                           pointmap.scores,
-                                                          init_H=transform_list[i-1],
+                                                          init_H=transform_list[i - 1],
                                                           init_phi=phi0,
                                                           n_samples=1000,
                                                           max_pairing_dist=0.2,
@@ -537,7 +526,7 @@ def pointmap_slam_v0debug(verbose=2):
 
             world_points, world_normals, phi1 = apply_motion_distortion(points,
                                                                         phi0,
-                                                                        transform_list[i-1],
+                                                                        transform_list[i - 1],
                                                                         world_H,
                                                                         normals=normals)
             if i > 0:
@@ -548,9 +537,9 @@ def pointmap_slam_v0debug(verbose=2):
                       [world_points, world_normals],
                       ['x', 'y', 'z', 'nx', 'ny', 'nz'])
 
-            print(world_H * np.linalg.inv(transform_list[i-1]))
+            print(world_H * np.linalg.inv(transform_list[i - 1]))
             if i > 145:
-                a = 1/0
+                a = 1 / 0
 
             # TODO: At one point traj fail why? We see that traj frame are deformed so maybe transform is not rotation
             #  anymore... Why ? Related to double free or courrptio nerror?
@@ -583,13 +572,13 @@ def pointmap_slam_v0debug(verbose=2):
 
             if verbose == 2:
                 ti = 0
-                print('Load ............ {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Load ............ {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
                 ti += 1
-                print('Preprocessing ... {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Preprocessing ... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
                 ti += 1
-                print('Align ........... {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Align ........... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
                 ti += 1
-                print('Mapping ......... {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Mapping ......... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
 
                 if i % 10 == 0:
                     write_ply('debug_map_{:03d}.ply'.format(i),
@@ -628,7 +617,7 @@ def pointmap_slam_v0debug(verbose=2):
                     # Apply transf
                     world_pts, phi1 = apply_motion_distortion(points,
                                                               phi0,
-                                                              transform_list[i-1],
+                                                              transform_list[i - 1],
                                                               world_H)
                     # Save phi for next frame
                     phi0 = phi1 - frame_stride * 2 * np.pi
@@ -671,7 +660,7 @@ def pointmap_slam_v0debug(verbose=2):
             # Apply transf
             world_pts, phi1 = apply_motion_distortion(points,
                                                       phi0,
-                                                      transform_list[i-1],
+                                                      transform_list[i - 1],
                                                       world_H)
             # Save phi for next frame
             phi0 = phi1 - frame_stride * 2 * np.pi
@@ -711,7 +700,6 @@ def pointmap_slam_v1(verbose=1, dataset_name='NCLT'):
                                                        verbose=1)
     else:
         data_path, days, day_f_times = get_MyhalSim_frames()
-
 
     # Out files
     out_folder = join(data_path, 'day_ply')
@@ -810,7 +798,6 @@ def pointmap_slam_v1(verbose=1, dataset_name='NCLT'):
                 sub_normals = normals
                 sub_norm_scores = norm_scores
 
-
             t += [time.time()]
 
             if i < 1:
@@ -834,7 +821,7 @@ def pointmap_slam_v1(verbose=1, dataset_name='NCLT'):
                                                           pointmap.points,
                                                           pointmap.normals,
                                                           pointmap.scores,
-                                                          init_H=transform_list[i-1],
+                                                          init_H=transform_list[i - 1],
                                                           init_phi=phi0,
                                                           motion_distortion=motion_distortion,
                                                           n_samples=1000,
@@ -849,12 +836,12 @@ def pointmap_slam_v1(verbose=1, dataset_name='NCLT'):
                 transform_list[i] = world_H
                 world_points, world_normals, phi1 = apply_motion_distortion(points,
                                                                             phi0,
-                                                                            transform_list[i-1],
+                                                                            transform_list[i - 1],
                                                                             world_H,
                                                                             normals=normals)
 
             if i > 3000:
-                a = 1/0
+                a = 1 / 0
 
             # Save phi for next frame
             phi0 = phi1 - frame_stride * 2 * np.pi
@@ -884,13 +871,13 @@ def pointmap_slam_v1(verbose=1, dataset_name='NCLT'):
 
             if verbose == 2:
                 ti = 0
-                print('Load ............ {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Load ............ {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
                 ti += 1
-                print('Preprocessing ... {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Preprocessing ... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
                 ti += 1
-                print('Align ........... {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Align ........... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
                 ti += 1
-                print('Mapping ......... {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Mapping ......... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
 
             if verbose > 0:
                 fmt_str = 'Mapping {:3d}  --- {:5.1f}% or {:02d}:{:02d}:{:02d} remaining at {:.1f}fps'
@@ -1085,7 +1072,6 @@ def pointmap_slam(dataset,
                 sub_normals = normals
                 sub_norm_scores = norm_scores
 
-
             t += [time.time()]
 
             if i < 1:
@@ -1109,7 +1095,7 @@ def pointmap_slam(dataset,
                                                           pointmap.points,
                                                           pointmap.normals,
                                                           pointmap.scores,
-                                                          init_H=transform_list[i-1],
+                                                          init_H=transform_list[i - 1],
                                                           init_phi=phi0,
                                                           motion_distortion=motion_distortion,
                                                           n_samples=1000,
@@ -1124,7 +1110,7 @@ def pointmap_slam(dataset,
                 transform_list[i] = world_H
                 world_points, world_normals, phi1 = apply_motion_distortion(points,
                                                                             phi0,
-                                                                            transform_list[i-1],
+                                                                            transform_list[i - 1],
                                                                             world_H,
                                                                             normals=normals)
 
@@ -1156,13 +1142,13 @@ def pointmap_slam(dataset,
 
             if verbose == 2:
                 ti = 0
-                print('Load ............ {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Load ............ {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
                 ti += 1
-                print('Preprocessing ... {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Preprocessing ... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
                 ti += 1
-                print('Align ........... {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Align ........... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
                 ti += 1
-                print('Mapping ......... {:7.1f}ms'.format(1000*(t[ti+1]-t[ti])))
+                print('Mapping ......... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
 
             if verbose > 0:
                 fmt_str = 'Mapping {:3d}  --- {:5.1f}% or {:02d}:{:02d}:{:02d} remaining at {:.1f}fps'
@@ -1231,7 +1217,6 @@ def pointmap_slam(dataset,
         write_ply(filename,
                   [pointmap.points, pointmap.normals, pointmap.scores, pointmap.counts],
                   ['x', 'y', 'z', 'nx', 'ny', 'nz', 'scores', 'counts'])
-
 
         all_points = []
         all_traj_pts = []
@@ -1497,9 +1482,6 @@ def annotation_on_gt_OLD(dataset, movable_threshold=0.9, still_threshold=0.5):
     #       IF Nlong > 80% => becomes long
     #       IF
 
-
-
-
     ####################
     # Confusion matrices
     ####################
@@ -1537,7 +1519,6 @@ def annotation_on_gt_OLD(dataset, movable_threshold=0.9, still_threshold=0.5):
         print(s)
 
         print('\n*********************************')
-
 
     return
 
@@ -1921,7 +1902,7 @@ def annotation_process(dataset,
         last_t = map_t[0] - 0.1
         remove_inds = []
         for i, t in enumerate(map_t):
-            
+
             # Handle cases were we have two identical timestamps in map_t
             if np.abs(t - last_t) < 0.01:
                 remove_inds.append(i)
@@ -1966,7 +1947,7 @@ def annotation_process(dataset,
                                              init_normals=map_normals,
                                              init_scores=map_scores,
                                              map_voxel_size=map_dl,
-                                             frame_voxel_size=3*map_dl,
+                                             frame_voxel_size=3 * map_dl,
                                              motion_distortion=False,
                                              filtering=False,
                                              icp_samples=600,
@@ -2052,8 +2033,8 @@ def annotation_process(dataset,
             ground_mask = extract_ground(day_points, day_normals,
                                          out_folder,
                                          vertical_thresh=10.0,
-                                         dist_thresh=0.1,
-                                         remove_dist=0.1)
+                                         dist_thresh=0.12,
+                                         remove_dist=0.01)
             categories[ground_mask] = 1
 
             # Save annotated day_map
@@ -2118,18 +2099,10 @@ def annotation_process(dataset,
             fps = fps_regu * fps + (1.0 - fps_regu) / (t[-1] - t[0])
             if (t[-1] - last_t > 5.0):
                 print('Reproj {:s} {:5d} --- {:5.1f}%% at {:.1f} fps'.format(day,
-                                                                            i + 1,
-                                                                            100 * (i + 1) / N,
-                                                                            fps))
+                                                                             i + 1,
+                                                                             100 * (i + 1) / N,
+                                                                             fps))
         print('OK')
-
-
-
-
-
-
-
-
 
     return
 
@@ -2179,8 +2152,6 @@ def double_still_reproj(points, counts, margin=0.1):
     still_mask[still_mask] = np.squeeze(dists) > margin
 
     return still_mask
-
-
 
 
 def detect_short_term_movables(dataset, pointmap, frame_names, transform_list, frame_stride, out_folder, verbose=1):
@@ -2376,7 +2347,6 @@ def test_loop_closure(dataset):
         with open(in_file, 'rb') as file:
             pointmap = pickle.load(file)
 
-
         print('Search planes in map')
         pointmap.planes, pointmap.plane_inds = map_plane_growing(pointmap.points,
                                                                  pointmap.normals,
@@ -2409,15 +2379,12 @@ def test_loop_closure(dataset):
 
         if d > 1:
 
-
-
             # Start loop closure
             pointmap.frame_localization(points, normals)
 
-
             t += [time.time()]
             ti = 0
-            print('Loop closure {:3d}  --- {:5.1f}%'.format(i + 1, 100 * (i+1) / N))
+            print('Loop closure {:3d}  --- {:5.1f}%'.format(i + 1, 100 * (i + 1) / N))
             print('Load ....... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
             ti += 1
             print('Normals .... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
@@ -2425,6 +2392,6 @@ def test_loop_closure(dataset):
             print('Closing .... {:7.1f}ms'.format(1000 * (t[ti + 1] - t[ti])))
             print('******************************')
 
-            a = 1/0
+            a = 1 / 0
 
         break

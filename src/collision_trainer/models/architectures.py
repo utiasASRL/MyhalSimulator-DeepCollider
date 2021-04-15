@@ -1324,7 +1324,7 @@ class KPCollider(nn.Module):
                     x_2D = self.prop_net[i](x_2D)
                     preds_2D.append(self.head_softmax_2D[i](x_2D))
 
-            # Stack 2d outputs and permute dimension to get the shape: [B, 2, L_2D, L_2D, 3]
+            # Stack 2d outputs and permute dimension to get the shape: [B, T, L_2D, L_2D, 3]
             preds_2D = torch.stack(preds_2D, axis=2).permute(0, 2, 3, 4, 1)
 
         ##############
@@ -1484,21 +1484,3 @@ class KPCollider(nn.Module):
         correct = (predicted == target).sum().item()
 
         return correct / total
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

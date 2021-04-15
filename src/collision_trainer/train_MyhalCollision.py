@@ -109,9 +109,9 @@ class MyhalCollisionConfig(Config):
     dl_2D = 0.12
 
     # Power of the loss for the 2d predictions (use smaller prop loss when shared weights)
-    power_2D_init_loss = 1.0
-    power_2D_prop_loss = 1.0
-    neg_pos_ratio = 6.0
+    power_2D_init_loss = 0.5
+    power_2D_prop_loss = 4.0
+    neg_pos_ratio = 4.0
 
     # Specification of the 2D networks composition
     init_2D_levels = 3
