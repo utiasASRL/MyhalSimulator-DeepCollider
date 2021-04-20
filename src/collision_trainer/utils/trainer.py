@@ -44,7 +44,7 @@ from sklearn.neighbors import KDTree
 from utils.mayavi_visu import fast_save_future_anim, save_zoom_img
 
 from models.blocks import KPConv
-from models.architectures import rot_loss
+from models.architectures import rot_loss, FakeColliderLoss
 
 # ----------------------------------------------------------------------------------------------------------------------
 #
@@ -1377,6 +1377,7 @@ class ModelTrainer:
         # Choose validation smoothing parameter (0 for no smothing, 0.99 for big smoothing)
         val_smooth = 0.95
         softmax = torch.nn.Softmax(1)
+        sigmoid_2D = nn.Sigmoid()
 
         # Create folder for validation predictions
         if not exists(join(config.saving_path, 'val_preds')):
@@ -1392,6 +1393,9 @@ class ModelTrainer:
 
         # Number of classes including ignored labels
         nc_tot = val_loader.dataset.num_classes
+
+        # Init Fake Loss Calculator
+        fake_loss = FakeColliderLoss(config)
 
         #####################
         # Network predictions
@@ -1434,8 +1438,8 @@ class ModelTrainer:
             r_inds_list = batch.reproj_inds
             r_mask_list = batch.reproj_masks
             labels_list = batch.val_labels
-            sigmoid_2D = nn.Sigmoid()
             stck_init_preds = sigmoid_2D(preds_init_2D).cpu().detach().numpy()
+            stck_future_logits = preds_2D.cpu().detach().numpy()
             stck_future_preds = sigmoid_2D(preds_2D).cpu().detach().numpy()
             stck_future_gts = batch.future_2D.cpu().detach().numpy()
             torch.cuda.synchronize(self.device)
@@ -1502,21 +1506,26 @@ class ModelTrainer:
                 f_all = np.stack((f_gt, f_pre))
                 np.save(filepath, f_all)
 
+                # Future errors defined the same as the loss
+                future_errors_bce = fake_loss.apply(gt_im, stck_future_logits[b_i, :, :, :, :], error='bce')
+                future_errors = fake_loss.apply(gt_im, stck_future_logits[b_i, :, :, :, :], error='linear')
+                future_errors = np.concatenate((future_errors_bce, future_errors), axis=0)
+                all_future_errors.append(np.squeeze(future_errors))
 
-                # Average future errors only on the positive pixels (ignore true negatives)
-                future_errors = []
-                for fut_t in range(gt_im.shape[0]):
-                    positive_mask = gt_im[fut_t, :, :, 2] + img[fut_t, :, :, 2] > 0.1
-                    future_e = np.abs(gt_im[fut_t, :, :, 2] - img[fut_t, :, :, 2])
+                # # Average future errors only on the positive pixels (ignore true negatives)
+                # future_errors = []
+                # for fut_t in range(gt_im.shape[0]):
+                #     positive_mask = gt_im[fut_t, :, :, 2] + img[fut_t, :, :, 2] > 0.1
+                #     future_e = np.abs(gt_im[fut_t, :, :, 2] - img[fut_t, :, :, 2])
 
-                    if (np.sum(positive_mask.astype(np.int32)) > 0):
-                        future_e = np.mean(future_e[positive_mask])
-                    else:
-                        future_e = 0
-                    future_errors.append(future_e)
-                future_errors = np.array(future_errors)
-                val_loader.dataset.val_2D_future[s_ind][f_ind] = future_errors
-                all_future_errors.append(future_errors)
+                #     if (np.sum(positive_mask.astype(np.int32)) > 0):
+                #         future_e = np.mean(future_e[positive_mask])
+                #     else:
+                #         future_e = 0
+                #     future_errors.append(future_e)
+                # future_errors = np.array(future_errors)
+                # val_loader.dataset.val_2D_future[s_ind][f_ind] = future_errors
+                # all_future_errors.append(future_errors)
 
                 # Get a measure of the 2D performances (init_2D)
                 reconstruction_errors = np.mean(np.abs(img0 - gt_im0), axis=(0, 1))
@@ -1614,6 +1623,8 @@ class ModelTrainer:
         mean_recons_e = 100 * np.mean(np.stack(all_reconstruction_errors, axis=0), axis=0)
         mean_merge_e = 100 * np.mean(np.stack(all_merging_errors, axis=0), axis=0)
         mean_future_e = 100 * np.mean(np.stack(all_future_errors, axis=0), axis=0)
+        mean_future_bce = mean_future_e[0, :, -1]
+        mean_future_e = mean_future_e[1, :, -1]
 
         #####################################
         # Results on the whole validation set
@@ -1647,8 +1658,8 @@ class ModelTrainer:
         # Saving (optionnal)
         if config.saving:
 
-            IoU_list = [IoUs, val_IoUs, mean_recons_e, mean_future_e]
-            file_list = ['subpart_IoUs.txt', 'val_IoUs.txt', 'reconstruction_error.txt', 'future_error.txt']
+            IoU_list = [IoUs, val_IoUs, mean_recons_e, mean_future_e, mean_future_bce]
+            file_list = ['subpart_IoUs.txt', 'val_IoUs.txt', 'reconstruction_error.txt', 'future_error.txt', 'future_error_bce.txt']
             for IoUs_to_save, IoU_file in zip(IoU_list, file_list):
 
                 # Name of saving file

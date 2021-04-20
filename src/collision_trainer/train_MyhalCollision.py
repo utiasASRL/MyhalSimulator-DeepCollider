@@ -109,9 +109,9 @@ class MyhalCollisionConfig(Config):
     dl_2D = 0.12
 
     # Power of the loss for the 2d predictions (use smaller prop loss when shared weights)
-    power_2D_init_loss = 0.5
-    power_2D_prop_loss = 4.0
-    neg_pos_ratio = 4.0
+    power_2D_init_loss = 1.0
+    power_2D_prop_loss = 2.0
+    neg_pos_ratio = 3.0
 
     # Specification of the 2D networks composition
     init_2D_levels = 3
@@ -195,7 +195,7 @@ class MyhalCollisionConfig(Config):
     #####################
 
     # Maximal number of epochs
-    max_epoch = 500
+    max_epoch = 1000
 
     # Learning rate management
     learning_rate = 1e-2
@@ -210,7 +210,7 @@ class MyhalCollisionConfig(Config):
     validation_size = 30
 
     # Number of epoch between each checkpoint
-    checkpoint_gap = 50
+    checkpoint_gap = 25
 
     # Augmentations
     augment_scale_anisotropic = False
@@ -246,7 +246,7 @@ if __name__ == '__main__':
     ############################
 
     # Set which gpu is going to be used
-    GPU_ID = '0'
+    GPU_ID = '1'
 
     # Set GPU visible device
     os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID

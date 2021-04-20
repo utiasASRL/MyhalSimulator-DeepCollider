@@ -3207,7 +3207,6 @@ class MyhalCollisionDataset(PointCloudDataset):
 
         return
 
-
     def load_calib_poses(self):
         """
         load calib poses and times.
@@ -3916,6 +3915,46 @@ class MyhalCollisionSampler(Sampler):
 
         print('Calibration done in {:.1f}s\n'.format(time.time() - t0))
         return
+
+
+class MyhalCollisionSamplerTest(MyhalCollisionSampler):
+    """Specific Sampler for MyhalCollision Tests which limits the predicted frame indices to certain ones"""
+
+    def __init__(self, dataset: MyhalCollisionDataset, wanted_frame_inds):
+        MyhalCollisionSampler.__init__(self, dataset)
+
+        # Dataset used by the sampler (no copy is made in memory)
+        self.frame_inds = torch.from_numpy(np.array(wanted_frame_inds, dtype=np.int64))
+
+        return
+
+    def __iter__(self):
+        """
+        Yield next batch indices here. In this dataset, this is a dummy sampler that yield the index of batch element
+        (input sphere) in epoch instead of the list of point indices
+        """
+
+        # Initiate current epoch ind
+        self.dataset.epoch_i *= 0
+        self.dataset.epoch_inds *= 0
+        self.dataset.epoch_labels *= 0
+
+        # Number of sphere centers taken per class in each cloud
+        num_centers = self.dataset.epoch_inds.shape[0]
+
+        # Repeat the wanted inds enough times
+        num_repeats = num_centers // self.frame_inds.shape[0] + 1
+        repeated_inds = self.frame_inds.repeat(num_repeats)
+
+        print(self.dataset.epoch_inds.shape)
+        print(self.frame_inds.shape, '=>', repeated_inds.shape)
+
+        # Update epoch inds
+        self.dataset.epoch_inds += repeated_inds[:num_centers]
+
+        # Generator loop
+        for i in range(self.frame_inds.shape[0]):
+            yield i
 
 
 class MyhalCollisionCustomBatch:

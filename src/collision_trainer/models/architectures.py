@@ -1462,6 +1462,7 @@ class KPCollider(nn.Module):
         # Combined loss
         self.output_loss = self.output_3D_loss + self.output_2D_loss
         return self.output_loss + self.reg_loss
+        
 
     def accuracy(self, outputs, batch):
         """
@@ -1484,3 +1485,78 @@ class KPCollider(nn.Module):
         correct = (predicted == target).sum().item()
 
         return correct / total
+
+
+class FakeColliderLoss(nn.Module):
+    """
+    Class defining KPFCollider
+    """
+
+    def __init__(self, config):
+        super(FakeColliderLoss, self).__init__()
+        
+        self.neg_pos_ratio = config.neg_pos_ratio
+        
+        self.fixed_conv = torch.nn.Conv2d(config.n_2D_layers, config.n_2D_layers, 3, stride=1, padding=1, bias=False)
+        self.fixed_conv.weight.requires_grad = False
+        self.fixed_conv.weight *= 0
+        for i in range(config.n_2D_layers):
+            self.fixed_conv.weight[i, i] += 10000.0
+
+        self.unreducted_criterion_2D = torch.nn.BCEWithLogitsLoss(reduction='none')
+        self.sigmoid = torch.nn.Sigmoid()
+
+        return
+
+
+    def apply(self, np_gt, np_logits, error='bce'):
+        """
+        Fake loss applied on numpy arrays for the validation metric
+        """
+
+        # First reshape numpy arrays to torch tensors with same dimensions as in the real loss
+        future_gt = torch.from_numpy(np_gt)
+        future_p = torch.from_numpy(np_logits)
+        if future_gt.dim() < 5:
+            future_gt = torch.unsqueeze(future_gt, 0)
+        if future_p.dim() < 5:
+            future_p = torch.unsqueeze(future_p, 0)
+
+        if future_p.dim() != 5 or future_gt.dim() != 5:
+            raise ValueError('Wrong dimensions in the Fake Loss')
+        
+        # Propagation loss applied to each prop layer => shapes = [B, T_2D, L_2D, L_2D, 3]
+        # Only use the positive pixels and approx 2 times more negative pixels (picked randomly)
+        gt_mask = torch.sum(future_gt, dim=-1)
+        ratio_pos = float(torch.sum((gt_mask > 0.01).to(torch.float32)) / float(torch.numel(gt_mask)))
+
+        # use a fixed conv2d to dilate positive inds
+        with torch.no_grad():
+            dilated_gt = self.fixed_conv(gt_mask)
+        dilated_inds = dilated_gt > 0.01
+        dilated_inds = torch.unsqueeze(dilated_inds, -1)
+
+        # Add some random negative inds
+        loss_mask = torch.rand_like(future_p[:, :, :, :, :1])
+        loss_mask[dilated_inds] = 1.0
+        threshold = min(1.0 - ratio_pos * self.neg_pos_ratio, 0.9)
+        loss_mask = loss_mask > threshold
+
+        # Reshape to get channels in the batch dimension
+        #loss_mask = loss_mask[0, :, :, :, 0]
+
+        # Specific loss function for validation (no reduction)
+        if error == 'bce':
+            future_errors = self.unreducted_criterion_2D(future_p, future_gt)
+        elif error == 'linear':
+            future_errors = torch.abs(self.sigmoid(future_p) - future_gt)
+        else:
+            raise ValueError('Wrong error name in fake loss')
+
+        # Now reduce according to mask: we want a shape of [T_2D, 3]
+        loss_mask = loss_mask.type(future_errors.dtype)
+        future_errors = torch.sum(future_errors * loss_mask, dim=(2, 3))
+        future_sums = torch.sum(loss_mask, dim=(2, 3))
+        future_errors = future_errors / (future_sums + 1e-9)
+
+        return future_errors.numpy()
