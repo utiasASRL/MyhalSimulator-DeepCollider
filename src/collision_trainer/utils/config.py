@@ -53,6 +53,7 @@ class Config:
     power_2D_init_loss = 1.0
     power_2D_prop_loss = 0.5
     neg_pos_ratio = 3.0
+    loss2D_version = 0
     
     # Specification of the 2D networks composition
     init_2D_levels = 3
@@ -339,6 +340,7 @@ class Config:
                                'power_2D_init_loss',
                                'power_2D_prop_loss',
                                'neg_pos_ratio',
+                               'loss2D_version',
                                'pretrained_3D',
                                'detach_2D',
                                'shared_2D',

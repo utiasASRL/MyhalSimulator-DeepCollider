@@ -58,14 +58,14 @@ class ModelTrainer:
     # Initialization methods
     # ------------------------------------------------------------------------------------------------------------------
 
-    def __init__(self, net, config, chkp_path=None, finetune=True, on_gpu=True):
+    def __init__(self, net, config, chkp_path=None, finetune=True, gpu_id=True):
         """
         Initialize training parameters and reload previous model for restore/finetune
         :param net: network object
         :param config: configuration object
         :param chkp_path: path to the checkpoint that needs to be loaded (None for new training)
         :param finetune: finetune from checkpoint (True) or restore training from checkpoint (False)
-        :param on_gpu: Train on GPU or CPU
+        :param on_gpu: Train on GPU or CPU (-1 = CPU / 0, 1, 2, 3 = GPU)
         """
 
         ############
@@ -87,8 +87,8 @@ class ModelTrainer:
                                          weight_decay=config.weight_decay)
 
         # Choose to train on CPU or GPU
-        if on_gpu and torch.cuda.is_available():
-            self.device = torch.device("cuda:0")
+        if gpu_id >= 0 and torch.cuda.is_available():
+            self.device = torch.device("cuda:{:d}".format(gpu_id))
         else:
             self.device = torch.device("cpu")
         net.to(self.device)
@@ -1504,12 +1504,17 @@ class ModelTrainer:
                 f_gt = (gt_im[:, :, :, 2] * 255).astype(np.uint8)
                 f_pre = (img[:, :, :, 2] * 255).astype(np.uint8)
                 f_all = np.stack((f_gt, f_pre))
-                np.save(filepath, f_all)
+                #np.save(filepath, f_all)
+
+                # Measure performances of the future predictions
+                # **********************************************
 
                 # Future errors defined the same as the loss
+                future_errors_e = fake_loss.apply(gt_im, stck_future_logits[b_i, :, :, :, :], error='linear')
                 future_errors_bce = fake_loss.apply(gt_im, stck_future_logits[b_i, :, :, :, :], error='bce')
-                future_errors = fake_loss.apply(gt_im, stck_future_logits[b_i, :, :, :, :], error='linear')
-                future_errors = np.concatenate((future_errors_bce, future_errors), axis=0)
+                fp_e, fn_e = fake_loss.fp_fn_errors(gt_im, stck_future_logits[b_i, :, :, :, :], error='linear')
+                fp_bce, fn_bce = fake_loss.fp_fn_errors(gt_im, stck_future_logits[b_i, :, :, :, :], error='bce')
+                future_errors = np.stack((future_errors_e, future_errors_bce, fp_e, fn_e, fp_bce, fn_bce), axis=0)
                 all_future_errors.append(np.squeeze(future_errors))
 
                 # # Average future errors only on the positive pixels (ignore true negatives)
@@ -1622,9 +1627,13 @@ class ModelTrainer:
         # Mean 2D errors
         mean_recons_e = 100 * np.mean(np.stack(all_reconstruction_errors, axis=0), axis=0)
         mean_merge_e = 100 * np.mean(np.stack(all_merging_errors, axis=0), axis=0)
-        mean_future_e = 100 * np.mean(np.stack(all_future_errors, axis=0), axis=0)
-        mean_future_bce = mean_future_e[0, :, -1]
-        mean_future_e = mean_future_e[1, :, -1]
+        mean_future_all = 100 * np.mean(np.stack(all_future_errors, axis=0), axis=0)
+        mean_future_e = mean_future_all[0, :, -1]
+        mean_future_bce = mean_future_all[1, :, -1]
+        mean_future_FP = mean_future_all[2, :, -1]
+        mean_future_FN = mean_future_all[3, :, -1]
+        mean_future_FP_bce = mean_future_all[4, :, -1]
+        mean_future_FN_bce = mean_future_all[5, :, -1]
 
         #####################################
         # Results on the whole validation set
@@ -1658,8 +1667,24 @@ class ModelTrainer:
         # Saving (optionnal)
         if config.saving:
 
-            IoU_list = [IoUs, val_IoUs, mean_recons_e, mean_future_e, mean_future_bce]
-            file_list = ['subpart_IoUs.txt', 'val_IoUs.txt', 'reconstruction_error.txt', 'future_error.txt', 'future_error_bce.txt']
+            IoU_list = [IoUs,
+                        val_IoUs,
+                        mean_recons_e,
+                        mean_future_e,
+                        mean_future_bce,
+                        mean_future_FP,
+                        mean_future_FN,
+                        mean_future_FP_bce,
+                        mean_future_FN_bce]
+            file_list = ['subpart_IoUs.txt',
+                         'val_IoUs.txt',
+                         'reconstruction_error.txt',
+                         'future_error.txt',
+                         'future_error_bce.txt',
+                         'future_FP.txt',
+                         'future_FN.txt',
+                         'future_FP_bce.txt',
+                         'future_FN_bce.txt']
             for IoUs_to_save, IoU_file in zip(IoU_list, file_list):
 
                 # Name of saving file

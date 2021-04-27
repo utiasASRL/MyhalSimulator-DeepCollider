@@ -1,0 +1,83 @@
+
+
+                #####################################
+                # Rapport davancement jour par jour #
+                #####################################
+
+
+    2021-04-21
+    **********
+        > fct de validation: nouvelles mesures avec focus sur les faux negatifs et les faux positifs
+        > collider_plots: affichage des nouvelle mesure de la validation
+        > loss: ajout de versions du loss car jusqu'a maintenant le loss ne prennait que tre peu en compte 
+            les faux positifs. On va pouvoir comparer les versio nde loss avec nos nouvelles mesures.
+        > loss: nouvelle maniere de reduire le loss, on moyenne d'abord pour chaque timestamps, ce qui donne 
+            le loss pour chaque future, on peu ensuite leverage le loss de chaque future avec des coeffs
+        > misc: automatic choice of the free GPU
+        > Lancement de deux training pour comparer le loss 0 et le loss 2. Il faudra aussi comparer le loss 1
+
+        TODO
+        > Utiliser ces training pour verifier quelles metrics sont les meilleures pour la validation
+        > Decider puis ne sauver que celle que l'on veux (BCE ou non, etc.)
+        > Comparer les qualite des predictions pour ces loss et en deduire si les metrics sont utiles
+        > Recreer un dataset de wanderer et de followers a vitesse fixe: avoir 6 datasets en tout et train les 
+            predictions
+    
+
+    2021-04-22
+    **********
+        > Found 2 errors in the code: 
+            - the pred mask in loss is wrong as it was using logits instead of preds
+            - the loss mask was taking the whole image because of wrong threshold calculated from pos_neg_ratio
+
+        > Error corrected, training from yesterday restarted
+
+        TODO:
+        > Pareil que pour hier
+        > Inverser les fichiers "future_error.txt" et "future_error_bce.txt" pour les deux derniers logs (les 
+            suivants seront bons)
+        > Pourquoi le loss v2 est beaucoup plus haut et baisse moins vite que le loss v0
+        > Tester le loss v1 aussi qui devrait avoir un meilleur fn mais un moins bon fp???
+
+    2021-04-23
+    **********
+        > Au niveau des metriques, ca depend pas mal, donc on peux choisir celle que l'on veut. elles donnent 
+            une bonne idee des perfs.
+        > Le loss v2 a l'air vraiment pas mal, meilleurs scores et meilleur visuel que le loss v0. Par contre on 
+            voit que le loss augmente au bout d'un certain temps. Surement parce qu'il y a plus de faux positifs
+            Il semble que la prediction des mur commence a faire n'importe quoi. Peut etre pa une si bonne idee
+            d'inclure les trois classes dans le loss de propagation
+
+        TODO:
+        > Une fois la convergence atteinte, lancer le training v1. Et un training v2 avec d'autre parametres, 
+            (plus fort propagation loss et decay plus lent, beaucoup d'epoques pour lancer ce weekend).
+        > Montrer a Tim la bce et la fe et decider quelle est la meilleure metrique
+
+    2021-04-26
+    **********
+        > La derniere experience lancee ce weekend avec propagation loss plus fort et decay plus lent a l'air 
+            meilleur. On a aussi augmente a 5 input frames pour avoir une meilleur estimation de la vitesse, 
+            mais on a oublie les features qui vont avec donc ces points etaient en realite invisible pour le 
+            premier layer. le reseau a surement pu les utiliser apres mais experience a refaire avec les bons 
+            features
+
+        > Probleme au niveau des metriques. La error et la BCE 
+
+        TODO:
+        > Visualisation comme l'idee 1 mais ou on compare plusieurs logs a la fin de leur convergence
+        > Verifier le noveau training avec 5 frames
+        > Comprendre pourquoi l'erreur du v1 est plu basse
+
+    2021-04-26
+    **********
+        > Premiere chose on a une idee de pourquoi le loss est meilleur pour le loss v1. C'est a cause du 
+            neg_pos_ratio qui est plus grand. il n'est pas pris en compte pour le fn fp donc regarder ca.
+            C'est maintenant corrige, on utilise un neg_pos_ratio fixe pour la validation
+
+
+
+
+
+
+
+

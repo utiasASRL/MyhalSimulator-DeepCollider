@@ -110,8 +110,9 @@ class MyhalCollisionConfig(Config):
 
     # Power of the loss for the 2d predictions (use smaller prop loss when shared weights)
     power_2D_init_loss = 1.0
-    power_2D_prop_loss = 2.0
-    neg_pos_ratio = 3.0
+    power_2D_prop_loss = 8.0
+    neg_pos_ratio = 0.5
+    loss2D_version = 2
 
     # Specification of the 2D networks composition
     init_2D_levels = 3
@@ -142,13 +143,17 @@ class MyhalCollisionConfig(Config):
     # Radius of the input sphere
     in_radius = 8.0
     val_radius = 8.0
-    n_frames = 3
+    n_frames = 5
     max_in_points = -1
     max_val_points = -1
 
+    # Choice of input features
+    first_features_dim = 100
+    in_features_dim = 5
+
     # Number of batch
-    batch_num = 5
-    val_batch_num = 1
+    batch_num = 4
+    val_batch_num = 4
 
     # Number of kernel points
     num_kernel_points = 15
@@ -170,10 +175,6 @@ class MyhalCollisionConfig(Config):
 
     # Aggregation function of KPConv in ('closest', 'sum')
     aggregation_mode = 'sum'
-
-    # Choice of input features
-    first_features_dim = 100
-    in_features_dim = 3
 
     # Can the network learn modulations
     modulated = False
@@ -200,7 +201,7 @@ class MyhalCollisionConfig(Config):
     # Learning rate management
     learning_rate = 1e-2
     momentum = 0.98
-    lr_decays = {i: 0.1 ** (1 / 150) for i in range(1, max_epoch)}
+    lr_decays = {i: 0.1 ** (1 / 200) for i in range(1, max_epoch)}
     grad_clip_norm = 100.0
 
     # Number of steps per epochs
@@ -210,7 +211,7 @@ class MyhalCollisionConfig(Config):
     validation_size = 30
 
     # Number of epoch between each checkpoint
-    checkpoint_gap = 25
+    checkpoint_gap = 20
 
     # Augmentations
     augment_scale_anisotropic = False
@@ -245,11 +246,30 @@ if __name__ == '__main__':
     # Initialize the environment
     ############################
 
-    # Set which gpu is going to be used
-    GPU_ID = '1'
+    # Set which gpu is going to be used (auto for automatic choice)
+    GPU_ID = 'auto'
+
+    # Automatic choice (need pynvml to be installed)
+    if GPU_ID == 'auto':
+        print('\nSearching a free GPU:')
+        for i in range(torch.cuda.device_count()):
+            a = torch.cuda.list_gpu_processes(i)
+            print(torch.cuda.list_gpu_processes(i))
+            a = a.split()
+            if a[1] == 'no':
+                GPU_ID = a[0][-1:]
+
+    # Safe check no free GPU
+    if GPU_ID == 'auto':
+        print('\nNo free GPU found!\n')
+        a = 1/0
+
+    else:
+        print('\nUsing GPU:', GPU_ID, '\n')
 
     # Set GPU visible device
     os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
+    chosen_gpu = int(GPU_ID)
 
     ###################
     # Training sessions
@@ -568,7 +588,7 @@ if __name__ == '__main__':
 
 
     # Define a trainer class
-    trainer = ModelTrainer(net, config, chkp_path=chosen_chkp)
+    trainer = ModelTrainer(net, config, chkp_path=chosen_chkp, gpu_id=chosen_gpu)
     print('Done in {:.1f}s\n'.format(time.time() - t1))
 
     print('\nStart training')

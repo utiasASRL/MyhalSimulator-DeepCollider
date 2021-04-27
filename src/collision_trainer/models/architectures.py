@@ -1208,10 +1208,13 @@ class KPCollider(nn.Module):
 
         # 2D parameters
         self.criterion_2D = torch.nn.BCEWithLogitsLoss()
+        self.unreducted_criterion_2D = torch.nn.BCEWithLogitsLoss(reduction='none')
+        self.sigmoid = torch.nn.Sigmoid()
         self.output_2D_loss = 0
         self.power_2D_init_loss = config.power_2D_init_loss
         self.power_2D_prop_loss = config.power_2D_prop_loss
         self.neg_pos_ratio = config.neg_pos_ratio
+        self.loss2D_version = config.loss2D_version
         self.apply_3D_loss = config.apply_3D_loss
         
         self.fixed_conv = torch.nn.Conv2d(config.n_2D_layers, config.n_2D_layers, 3, stride=1, padding=1, bias=False)
@@ -1221,6 +1224,10 @@ class KPCollider(nn.Module):
             self.fixed_conv.weight[i, i] += 10000.0
 
         self.train_only_3D = config.pretrained_3D == 'todo'
+
+        # Loss coefficient for each timestamp and each class [T_2D, 3]
+        self.future_coeffs = torch.nn.Parameter(torch.ones((config.n_2D_layers, 3)), requires_grad=False)
+        self.total_coeff = float(torch.sum(self.future_coeffs))
 
         return
 
@@ -1395,53 +1402,151 @@ class KPCollider(nn.Module):
             merged_future[:, :, :, 2] = max_v
             self.init_2D_loss += self.power_2D_init_loss * self.criterion_2D(preds_init_2D[:, 1, :, :, :], merged_future)
             
+            # Attentive loss
+            # **************
+            #
+            #   v0: Uses all the pixels
+            #   v1: Only use the GT positive pixels and X times more negative pixels (picked randomly)
+            #   v2: Use the GT positive and the pred positives, only ignores the true negatives
+            #   > Decided by the loss2D_version value (0, 1, or 2)
+            #
 
-            # Propagation loss applied to each prop layer => shapes = [B, T_2D, L_2D, L_2D, 3]
-            # Only use the positive pixels and approx 2 times more negative pixels (picked randomly)
+            future_logits = preds_2D[:, :, :, :, :]
             future_gt = batch.future_2D[:, 1:, :, :, :]
-            gt_mask = torch.sum(future_gt, dim=-1)
-            ratio_pos = float(torch.sum((gt_mask > 0.01).to(torch.float32)) / float(torch.numel(gt_mask)))
 
-            # use a fixed conv2d to dilate positive inds
-            with torch.no_grad():
-                dilated_gt = self.fixed_conv(gt_mask)
-            dilated_inds = dilated_gt > 0.01
-            dilated_inds = torch.unsqueeze(dilated_inds, -1)
+            if self.loss2D_version == 0:
 
-            # Add some random negative inds
-            future_p = preds_2D[:, :, :, :, :]
-            loss_mask = torch.rand_like(future_p[:, :, :, :, :1])
-            loss_mask[dilated_inds] = 1.0
-            threshold = min(1.0 - ratio_pos * self.neg_pos_ratio, 0.9)
-            loss_mask = loss_mask > threshold
-            loss_mask = loss_mask.repeat(1, 1, 1, 1, 3)
+                loss_mask = None
 
+            elif self.loss2D_version == 1:
 
-            # import matplotlib.pyplot as plt
-            # from matplotlib.animation import FuncAnimation
-            # fig, ax = plt.subplots()
-            # debug_img = loss_mask[0, :, :, :, 0].cpu().detach().numpy()
-            # im = plt.imshow(debug_img[0])
-            # def animate(i):
-            #     im.set_array(debug_img[i])
-            #     return [im]
-            # anim = FuncAnimation(fig, animate,
-            #                      frames=np.arange(debug_img.shape[0]),
-            #                      interval=50,
-            #                      blit=True)
-            # fig2, ax = plt.subplots()
-            # debug_img2 = future_gt[0, :, :, :, :].cpu().detach().numpy()
-            # im2 = plt.imshow(debug_img2[0])
-            # def animate2(i):
-            #     im2.set_array(debug_img2[i])
-            #     return [im2]
-            # anim2 = FuncAnimation(fig2, animate2,
-            #                       frames=np.arange(debug_img2.shape[0]),
-            #                       interval=50,
-            #                       blit=True)
-            # plt.show()
+                # Propagation loss applied to each prop layer => shapes = [B, T_2D, L_2D, L_2D, 3]
+                # Only use the positive pixels and approx 2 times more negative pixels (picked randomly)
+                gt_mask = torch.sum(future_gt, dim=-1)
+                ratio_pos = float(torch.sum((gt_mask > 0.01).to(torch.float32)) / float(torch.numel(gt_mask)))
 
-            self.prop_2D_loss = self.power_2D_prop_loss * self.criterion_2D(future_p[loss_mask], future_gt[loss_mask])
+                # use a fixed conv2d to dilate positive inds
+                with torch.no_grad():
+                    dilated_gt = self.fixed_conv(gt_mask)
+                dilated_inds = dilated_gt > 0.01
+                dilated_inds = torch.unsqueeze(dilated_inds, -1)
+
+                # Add some random negative inds
+                loss_mask = torch.rand_like(future_logits[:, :, :, :, :1])
+                loss_mask[dilated_inds] = 1.0
+                if ratio_pos < 0.99:
+                    threshold = 1 - (ratio_pos * self.neg_pos_ratio / (1.0 - ratio_pos))
+                else:
+                    threshold = 0
+                    
+                threshold = min(threshold, 0.98)
+                loss_mask = loss_mask > threshold
+                loss_mask = loss_mask.repeat(1, 1, 1, 1, 3)
+
+                # import matplotlib.pyplot as plt
+                # from matplotlib.animation import FuncAnimation
+                # fig, ax = plt.subplots()
+                # debug_img = loss_mask[0, :, :, :, 0].cpu().detach().numpy()
+                # im = plt.imshow(debug_img[0])
+                # def animate(i):
+                #     im.set_array(debug_img[i])
+                #     return [im]
+                # anim = FuncAnimation(fig, animate,
+                #                      frames=np.arange(debug_img.shape[0]),
+                #                      interval=50,
+                #                      blit=True)
+                # fig2, ax = plt.subplots()
+                # debug_img2 = future_gt[0, :, :, :, :].cpu().detach().numpy()
+                # im2 = plt.imshow(debug_img2[0])
+                # def animate2(i):
+                #     im2.set_array(debug_img2[i])
+                #     return [im2]
+                # anim2 = FuncAnimation(fig2, animate2,
+                #                       frames=np.arange(debug_img2.shape[0]),
+                #                       interval=50,
+                #                       blit=True)
+                # plt.show()
+
+            else:
+
+                # Masks for FP and FN
+                gt_mask = torch.sum(future_gt, dim=-1, keepdim=True) > 0.05
+                pred_mask = torch.sum(self.sigmoid(future_logits), dim=-1, keepdim=True) > 0.05
+                pos_mask = torch.logical_or(gt_mask, pred_mask)
+                ratio_pos = float(torch.sum(pos_mask.to(torch.float32)) / float(torch.numel(pos_mask)))
+
+                # Mask for the loss
+                loss_mask = torch.rand_like(future_logits[:, :, :, :, :1])
+                loss_mask[pos_mask] = 1.0
+
+                # Threshold for the random locations
+                if ratio_pos < 0.99:
+                    threshold = 1 - (ratio_pos * self.neg_pos_ratio / (1.0 - ratio_pos))
+                else:
+                    threshold = 0
+                
+                # Have a least some locations for the loss
+                threshold = min(threshold, 0.98)
+                loss_mask = loss_mask > threshold
+                    
+                # import matplotlib.pyplot as plt
+                # from matplotlib.animation import FuncAnimation
+                # fig, ax = plt.subplots()
+                # print(future_logits.shape)
+                # debug_img = np.zeros_like(future_logits[0, :, :, :, :].cpu().detach().numpy())
+                # r = debug_img[..., 0]
+                # g = debug_img[..., 1]
+                # b = debug_img[..., 2]
+                # g[np.squeeze(gt_mask[0].cpu().detach().numpy())] = 1.0
+                # r[np.squeeze(pred_mask[0].cpu().detach().numpy())] = 1.0
+                # im = plt.imshow(debug_img[0])
+                # def animate(i):
+                #     im.set_array(debug_img[i])
+                #     return [im]
+                # anim = FuncAnimation(fig, animate,
+                #                      frames=np.arange(debug_img.shape[0]),
+                #                      interval=50,
+                #                      blit=True)
+                # fig2, ax = plt.subplots()
+                # debug_img2 = future_gt[0, :, :, :, :].cpu().detach().numpy()
+                # im2 = plt.imshow(debug_img2[0])
+                # def animate2(i):
+                #     im2.set_array(debug_img2[i])
+                #     return [im2]
+                # anim2 = FuncAnimation(fig2, animate2,
+                #                       frames=np.arange(debug_img2.shape[0]),
+                #                       interval=50,
+                #                       blit=True)
+                # fig3, ax = plt.subplots()
+                # debug_img3 = loss_mask[0, :, :, :, :].cpu().detach().numpy().astype(np.float32)
+                # debug_img3 = np.tile(debug_img3, (1, 1, 1, 3))
+                # im3 = plt.imshow(debug_img3[0], )
+                # def animate3(i):
+                #     im3.set_array(debug_img3[i])
+                #     return [im3]
+                # anim3 = FuncAnimation(fig3, animate3,
+                #                       frames=np.arange(debug_img3.shape[0]),
+                #                       interval=50,
+                #                       blit=True)
+                # plt.show()
+
+            # Specific loss function with no reduction
+            future_errors = self.unreducted_criterion_2D(future_logits, future_gt)
+
+            # Now reduce according to mask: we want a shape of [T_2D, 3]
+            if loss_mask is None:
+                future_errors = torch.mean(future_errors, dim=(0, 2, 3))
+            else:
+                loss_mask = loss_mask.type(future_errors.dtype)
+                future_errors = torch.sum(future_errors * loss_mask, dim=(0, 2, 3))
+                future_sums = torch.sum(loss_mask, dim=(0, 2, 3))
+                future_errors = future_errors / (future_sums + 1e-9)
+            
+            # Here multiply with coefficients
+            future_loss = torch.sum(future_errors * self.future_coeffs) / self.total_coeff
+
+            # Save prop loss
+            self.prop_2D_loss = self.power_2D_prop_loss * future_loss
 
             # Sum the two 2D losses
             self.output_2D_loss = self.init_2D_loss + self.prop_2D_loss
@@ -1495,7 +1600,7 @@ class FakeColliderLoss(nn.Module):
     def __init__(self, config):
         super(FakeColliderLoss, self).__init__()
         
-        self.neg_pos_ratio = config.neg_pos_ratio
+        self.neg_pos_ratio = 0.5
         
         self.fixed_conv = torch.nn.Conv2d(config.n_2D_layers, config.n_2D_layers, 3, stride=1, padding=1, bias=False)
         self.fixed_conv.weight.requires_grad = False
@@ -1509,54 +1614,178 @@ class FakeColliderLoss(nn.Module):
         return
 
 
-    def apply(self, np_gt, np_logits, error='bce'):
+    def apply(self, np_gt, np_logits, loss2D_version=2, error='bce'):
         """
         Fake loss applied on numpy arrays for the validation metric
         """
 
         # First reshape numpy arrays to torch tensors with same dimensions as in the real loss
         future_gt = torch.from_numpy(np_gt)
-        future_p = torch.from_numpy(np_logits)
+        future_logits = torch.from_numpy(np_logits)
         if future_gt.dim() < 5:
             future_gt = torch.unsqueeze(future_gt, 0)
-        if future_p.dim() < 5:
-            future_p = torch.unsqueeze(future_p, 0)
+        if future_logits.dim() < 5:
+            future_logits = torch.unsqueeze(future_logits, 0)
 
-        if future_p.dim() != 5 or future_gt.dim() != 5:
+        if future_logits.dim() != 5 or future_gt.dim() != 5:
             raise ValueError('Wrong dimensions in the Fake Loss')
+
+        # Attentive loss
+        # **************
+        #
+        #   v0: Uses all the pixels
+        #   v1: Only use the GT positive pixels and X times more negative pixels (picked randomly)
+        #   v2: Use the GT positive and the pred positives, only ignores the true negatives
+        #   > Decided by the loss2D_version value (0, 1, or 2)
+        #
+
+        if loss2D_version == 0:
+
+            loss_mask = None
+
+        elif loss2D_version == 1:
+
+            # Propagation loss applied to each prop layer => shapes = [B, T_2D, L_2D, L_2D, 3]
+            # Only use the positive pixels and approx 2 times more negative pixels (picked randomly)
+            gt_mask = torch.sum(future_gt, dim=-1)
+            ratio_pos = float(torch.sum((gt_mask > 0.01).to(torch.float32)) / float(torch.numel(gt_mask)))
+
+            # use a fixed conv2d to dilate positive inds
+            with torch.no_grad():
+                dilated_gt = self.fixed_conv(gt_mask)
+            dilated_inds = dilated_gt > 0.01
+            dilated_inds = torch.unsqueeze(dilated_inds, -1)
+
+            # Add some random negative inds
+            loss_mask = torch.rand_like(future_logits[:, :, :, :, :1])
+            loss_mask[dilated_inds] = 1.0
+            if ratio_pos < 0.99:
+                threshold = 1 - (ratio_pos * self.neg_pos_ratio / (1.0 - ratio_pos))
+            else:
+                threshold = 0
+            threshold = min(threshold, 0.98)
+            loss_mask = loss_mask > threshold
+            loss_mask = loss_mask.repeat(1, 1, 1, 1, 3)
+
+        else:
+
+            # Masks for FP and FN
+            gt_mask = torch.sum(future_gt, dim=-1, keepdim=True) > 0.05
+            pred_mask = torch.sum(self.sigmoid(future_logits), dim=-1, keepdim=True) > 0.05
+            pos_mask = torch.logical_or(gt_mask, pred_mask)
+            ratio_pos = float(torch.sum(pos_mask.to(torch.float32)) / float(torch.numel(pos_mask)))
+
+            loss_mask = torch.rand_like(future_logits[:, :, :, :, :1])
+            loss_mask[pos_mask] = 1.0
+
+            if ratio_pos < 0.99:
+                threshold = 1 - (ratio_pos * self.neg_pos_ratio / (1.0 - ratio_pos))
+            else:
+                threshold = 0
+            threshold = min(threshold, 0.98)
+            loss_mask = loss_mask > threshold
+
+            # import matplotlib.pyplot as plt
+            # from matplotlib.animation import FuncAnimation
+            # fig, ax = plt.subplots()
+            # debug_img = np.zeros_like(future_logits[0, :, :, :, :].cpu().detach().numpy())
+            # r = debug_img[..., 0]
+            # g = debug_img[..., 1]
+            # b = debug_img[..., 2]
+            # g[np.squeeze(gt_mask[0].cpu().detach().numpy())] = 1.0
+            # r[np.squeeze(pred_mask[0].cpu().detach().numpy())] = 1.0
+            # im = plt.imshow(debug_img[0])
+            # def animate(i):
+            #     im.set_array(debug_img[i])
+            #     return [im]
+            # anim = FuncAnimation(fig, animate,
+            #                      frames=np.arange(debug_img.shape[0]),
+            #                      interval=50,
+            #                      blit=True)
+            # fig2, ax = plt.subplots()
+            # debug_img2 = future_gt[0, :, :, :, :].cpu().detach().numpy()
+            # im2 = plt.imshow(debug_img2[0])
+            # def animate2(i):
+            #     im2.set_array(debug_img2[i])
+            #     return [im2]
+            # anim2 = FuncAnimation(fig2, animate2,
+            #                       frames=np.arange(debug_img2.shape[0]),
+            #                       interval=50,
+            #                       blit=True)
+            # fig3, ax = plt.subplots()
+            # debug_img3 = loss_mask[0, :, :, :, 0].cpu().detach().numpy()
+            # im3 = plt.imshow(debug_img3[0])
+            # def animate3(i):
+            #     im3.set_array(debug_img3[i])
+            #     return [im3]
+            # anim3 = FuncAnimation(fig3, animate3,
+            #                       frames=np.arange(debug_img3.shape[0]),
+            #                       interval=50,
+            #                       blit=True)
+            # plt.show()
         
-        # Propagation loss applied to each prop layer => shapes = [B, T_2D, L_2D, L_2D, 3]
-        # Only use the positive pixels and approx 2 times more negative pixels (picked randomly)
-        gt_mask = torch.sum(future_gt, dim=-1)
-        ratio_pos = float(torch.sum((gt_mask > 0.01).to(torch.float32)) / float(torch.numel(gt_mask)))
-
-        # use a fixed conv2d to dilate positive inds
-        with torch.no_grad():
-            dilated_gt = self.fixed_conv(gt_mask)
-        dilated_inds = dilated_gt > 0.01
-        dilated_inds = torch.unsqueeze(dilated_inds, -1)
-
-        # Add some random negative inds
-        loss_mask = torch.rand_like(future_p[:, :, :, :, :1])
-        loss_mask[dilated_inds] = 1.0
-        threshold = min(1.0 - ratio_pos * self.neg_pos_ratio, 0.9)
-        loss_mask = loss_mask > threshold
-
-        # Reshape to get channels in the batch dimension
-        #loss_mask = loss_mask[0, :, :, :, 0]
-
         # Specific loss function for validation (no reduction)
         if error == 'bce':
-            future_errors = self.unreducted_criterion_2D(future_p, future_gt)
+            future_errors = self.unreducted_criterion_2D(future_logits, future_gt)
         elif error == 'linear':
-            future_errors = torch.abs(self.sigmoid(future_p) - future_gt)
+            future_errors = torch.abs(self.sigmoid(future_logits) - future_gt)
         else:
             raise ValueError('Wrong error name in fake loss')
 
         # Now reduce according to mask: we want a shape of [T_2D, 3]
-        loss_mask = loss_mask.type(future_errors.dtype)
-        future_errors = torch.sum(future_errors * loss_mask, dim=(2, 3))
-        future_sums = torch.sum(loss_mask, dim=(2, 3))
-        future_errors = future_errors / (future_sums + 1e-9)
+        if loss_mask is None:
+            future_errors = torch.mean(future_errors, dim=(0, 2, 3))
+        else:
+            loss_mask = loss_mask.type(future_errors.dtype)
+            future_errors = torch.sum(future_errors * loss_mask, dim=(0, 2, 3))
+            future_sums = torch.sum(loss_mask, dim=(0, 2, 3))
+            future_errors = future_errors / (future_sums + 1e-9)
 
         return future_errors.numpy()
+
+    
+    def fp_fn_errors(self, np_gt, np_logits, error='bce'):
+        """
+        Fake loss applied on numpy arrays for the validation metric
+        """
+
+        # First reshape numpy arrays to torch tensors with same dimensions as in the real loss
+        future_gt = torch.from_numpy(np_gt)
+        future_logits = torch.from_numpy(np_logits)
+        if future_gt.dim() < 5:
+            future_gt = torch.unsqueeze(future_gt, 0)
+        if future_logits.dim() < 5:
+            future_logits = torch.unsqueeze(future_logits, 0)
+
+        if future_logits.dim() != 5 or future_gt.dim() != 5:
+            raise ValueError('Wrong dimensions in the Fake Loss')
+
+        # Get predictions
+        future_p = self.sigmoid(future_logits)
+
+        # Masks for FP and FN
+        gt_mask = torch.sum(future_gt, dim=-1, keepdim=True) > 0.05
+        pred_mask = torch.sum(future_p, dim=-1, keepdim=True) > 0.05
+        
+        # Specific loss function for validation (no reduction)
+        if error == 'bce':
+            future_errors = self.unreducted_criterion_2D(future_logits, future_gt)
+        elif error == 'linear':
+            future_errors = torch.abs(future_p - future_gt)
+        else:
+            raise ValueError('Wrong error name in fake loss')
+
+        # Now reduce according to mask: we want a shape of [T_2D, 3]
+        gt_mask = gt_mask.type(future_errors.dtype)
+        future_fn = torch.sum(future_errors * gt_mask, dim=(0, 2, 3))
+        future_sums = torch.sum(gt_mask, dim=(0, 2, 3))
+        future_fn = future_fn / (future_sums + 1e-9)
+        
+        # Now reduce according to mask: we want a shape of [T_2D, 3]
+        pred_mask = pred_mask.type(future_errors.dtype)
+        future_fp = torch.sum(future_errors * pred_mask, dim=(0, 2, 3))
+        future_sums = torch.sum(pred_mask, dim=(0, 2, 3))
+        future_fp = future_fp / (future_sums + 1e-9)
+
+        return future_fp.numpy(), future_fn.numpy()
+

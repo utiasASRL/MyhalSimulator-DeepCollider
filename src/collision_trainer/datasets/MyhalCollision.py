@@ -2882,14 +2882,22 @@ class MyhalCollisionDataset(PointCloudDataset):
         # Input features (Use reflectance, input height or all coordinates)
         stacked_features = np.ones_like(stacked_points[:, :1],
                                         dtype=np.float32)
+
         if self.config.in_features_dim == 1:
             pass
+
+        elif self.config.in_features_dim == self.config.n_frames:
+            # Use the frame indicators
+            stacked_features = features[:, :self.config.n_frames]
+
         elif self.config.in_features_dim == 3:
             # Use only the three frame indicators
             stacked_features = features[:, :3]
+
         elif self.config.in_features_dim == 4:
             # Use the ones + the three frame indicators
             stacked_features = np.hstack((stacked_features, features[:, :3]))
+
         else:
             raise ValueError(
                 'Only accepted input dimensions are 1, 2 and 4 (without and with XYZ)'
@@ -3945,9 +3953,6 @@ class MyhalCollisionSamplerTest(MyhalCollisionSampler):
         # Repeat the wanted inds enough times
         num_repeats = num_centers // self.frame_inds.shape[0] + 1
         repeated_inds = self.frame_inds.repeat(num_repeats)
-
-        print(self.dataset.epoch_inds.shape)
-        print(self.frame_inds.shape, '=>', repeated_inds.shape)
 
         # Update epoch inds
         self.dataset.epoch_inds += repeated_inds[:num_centers]

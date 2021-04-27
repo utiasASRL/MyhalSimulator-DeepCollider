@@ -978,42 +978,58 @@ def save_future_anim(gif_name, future_imgs, close=False):
         return fig, anim
 
 
-def fast_save_future_anim(gif_name, future_imgs, zoom=1, correction=False, k_background=True):
-
-    if (future_imgs.dtype == np.uint8):
-        future_imgs = future_imgs.astype(np.float32) / 255
+def colorize_collisions(collision_imgs, k_background=True):
 
     if k_background:
-        colored_img = (future_imgs[..., [2, 0, 1]] * 255).astype(np.uint8)
+        colored_img = (collision_imgs[..., [2, 0, 1]] * 255).astype(np.uint8)
         background = np.array([0, 0, 0], dtype=np.float64)
         shortT1 = np.array([1.0, 0, 0], dtype=np.float64)
         shortT2 = np.array([1.0, 1.0, 0], dtype=np.float64)
     else:
-        colored_img = ((1.0 - future_imgs[..., [1, 2, 0]]) * 255).astype(np.uint8)
+        colored_img = ((1.0 - collision_imgs[..., [1, 2, 0]]) * 255).astype(np.uint8)
         background = np.array([1, 1, 1], dtype=np.float64)
         shortT1 = np.array([1.0, 0, 0], dtype=np.float64)
         shortT2 = np.array([1.0, 1.0, 0], dtype=np.float64)
 
-    if correction:
-        resolution = 256
-        shortT1 = np.array([1.0, 0, 0], dtype=np.float64)
-        shortT2 = np.array([1.0, 1.0, 0], dtype=np.float64)
-        cmap_shortT = np.vstack((np.linspace(background, shortT1, resolution),
-                                np.linspace(shortT1, shortT2, resolution)))
-        cmap_shortT = (cmap_shortT * 255).astype(np.uint8)                        
-        shortT = future_imgs[..., 2]
-        mask = shortT > 0.05
-        inds = np.around(shortT * (cmap_shortT.shape[0] - 1)).astype(np.int32)
-        pooled_cmap = cmap_shortT[inds]
-        colored_img[mask] = pooled_cmap[mask]
-    
-    if zoom > 1:
-        colored_img = np.repeat(colored_img, zoom, axis=1)
-        colored_img = np.repeat(colored_img, zoom, axis=2)
+    resolution = 256
+    shortT1 = np.array([1.0, 0, 0], dtype=np.float64)
+    shortT2 = np.array([1.0, 1.0, 0], dtype=np.float64)
+    cmap_shortT = np.vstack((np.linspace(background, shortT1, resolution),
+                            np.linspace(shortT1, shortT2, resolution)))
+    cmap_shortT = (cmap_shortT * 255).astype(np.uint8)                        
+    shortT = collision_imgs[..., 2]
+    mask = shortT > 0.05
+    inds = np.around(shortT * (cmap_shortT.shape[0] - 1)).astype(np.int32)
+    pooled_cmap = cmap_shortT[inds]
+    colored_img[mask] = pooled_cmap[mask]
 
+    return colored_img
+
+
+def zoom_collisions(collision_imgs, zoom=1):
+
+    if zoom > 1:
+        collision_imgs = np.repeat(collision_imgs, zoom, axis=-3)
+        collision_imgs = np.repeat(collision_imgs, zoom, axis=-2)
+
+    return collision_imgs
+
+
+def fast_save_future_anim(gif_name, future_imgs, zoom=1, correction=False):
+
+    if (future_imgs.dtype == np.uint8):
+        future_imgs = future_imgs.astype(np.float32) / 255
+
+    # Apply colorization
+    if correction:
+        colored_img = colorize_collisions(future_imgs)
+    
+    # Apply zoom
+    colored_img = zoom_collisions(colored_img, zoom)
+
+    # Save
     imageio.mimsave(gif_name, colored_img, fps=20)
     return
-
 
 
 def save_zoom_img(im_name, img, zoom=1, correction=False, k_background=True):
@@ -1054,7 +1070,23 @@ def save_zoom_img(im_name, img, zoom=1, correction=False, k_background=True):
     return
 
 
+def superpose_gt(pred_imgs, gt_imgs):
 
+    # Pred shape = [..., X, T, H, W, 3]
+    # gt_shape = [..., 1, T, H, W, 3]
+
+    # Get gt mask of moving objects
+    gt_mask = gt_imgs[..., 0] > 1
+
+    # Create superposition of gt and preds
+    r = pred_imgs[..., 0]
+    g = pred_imgs[..., 1]
+    b = pred_imgs[..., 2]
+    r[gt_mask] += 0
+    g[gt_mask] += 0
+    b[gt_mask] += 255
+
+    return pred_imgs
 
 
 

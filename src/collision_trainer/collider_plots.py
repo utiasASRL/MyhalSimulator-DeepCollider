@@ -32,6 +32,8 @@ from sklearn.metrics import confusion_matrix
 import time
 import pickle
 from torch.utils.data import DataLoader
+from matplotlib.animation import FuncAnimation
+import matplotlib.patches as patches
 
 # My libs
 from utils.config import Config
@@ -39,7 +41,7 @@ from utils.metrics import IoU_from_confusions, smooth_metrics, fast_confusion
 from utils.ply import read_ply
 from models.architectures import FakeColliderLoss, KPCollider
 from utils.tester import ModelTester
-from utils.mayavi_visu import fast_save_future_anim, save_zoom_img
+from utils.mayavi_visu import fast_save_future_anim, save_zoom_img, colorize_collisions, zoom_collisions, superpose_gt
 
 # Datasets
 from datasets.MyhalCollision import MyhalCollisionDataset, MyhalCollisionSampler, MyhalCollisionCollate, MyhalCollisionSamplerTest
@@ -52,30 +54,42 @@ from datasets.MyhalCollision import MyhalCollisionDataset, MyhalCollisionSampler
 
 
 def running_mean(signal, n, axis=0, stride=1):
-    signal = np.array(signal)
-    torch_conv = torch.nn.Conv1d(1, 1, kernel_size=2*n+1, stride=stride, bias=False)
+
+    # Create the smoothing convolution
+    torch_conv = torch.nn.Conv1d(1, 1, kernel_size=2 * n + 1, stride=stride, bias=False)
     torch_conv.weight.requires_grad_(False)
     torch_conv.weight *= 0
-    torch_conv.weight += 1 / (2*n+1)
+    torch_conv.weight += 1 / (2 * n + 1)
+
+    signal = np.array(signal)
     if signal.ndim == 1:
-        torch_signal = torch.from_numpy(signal.reshape([1, 1, -1]).astype(np.float32))
-        return torch_conv(torch_signal).squeeze().numpy()
+
+        # Reshape signal to torch Tensor
+        signal = np.expand_dims(np.expand_dims(signal, 0), 1).astype(np.float32)
+        torch_signal = torch.from_numpy(signal)
+
+        # Get result
+        smoothed = torch_conv(torch_signal).squeeze().numpy()
+
+        return smoothed
 
     elif signal.ndim == 2:
-        print('TODO implement with torch and stride here')
-        smoothed = np.empty(signal.shape)
+
+        # transpose if we want axis 0
         if axis == 0:
-            for i, sig in enumerate(signal):
-                sig_sum = np.convolve(sig, np.ones((2*n+1,)), mode='same')
-                sig_num = np.convolve(sig*0+1, np.ones((2*n+1,)), mode='same')
-                smoothed[i, :] = sig_sum / sig_num
-        elif axis == 1:
-            for i, sig in enumerate(signal.T):
-                sig_sum = np.convolve(sig, np.ones((2*n+1,)), mode='same')
-                sig_num = np.convolve(sig*0+1, np.ones((2*n+1,)), mode='same')
-                smoothed[:, i] = sig_sum / sig_num
-        else:
-            print('wrong axis')
+            signal = signal.T
+
+        # Reshape signal to torch Tensor
+        signal = np.expand_dims(signal, 1).astype(np.float32)
+        torch_signal = torch.from_numpy(signal)
+
+        # Get result
+        smoothed = torch_conv(torch_signal).squeeze().numpy()
+
+        # transpose if we want axis 0
+        if axis == 0:
+            smoothed = smoothed.T
+
         return smoothed
 
     else:
@@ -340,7 +354,6 @@ def compare_trainings(list_of_paths, list_of_labels=None):
         else:
             continue
 
-
         # Load results
         training_res_list = load_training_results(path)
         if len(training_res_list) > 6:
@@ -418,7 +431,7 @@ def compare_trainings(list_of_paths, list_of_labels=None):
     if all_loss2:
 
         fig, axes = plt.subplots(1, 3, sharey=True, figsize=(12, 5))
-        
+
         for i, label in enumerate(list_of_labels):
             axes[0].plot(all_epochs[i], all_loss1[i], linewidth=1, label=label)
             axes[1].plot(all_epochs[i], all_loss2[i], linewidth=1, label=label)
@@ -439,8 +452,6 @@ def compare_trainings(list_of_paths, list_of_labels=None):
         # Customize the graph
         for ax in axes:
             ax.grid(linestyle='-.', which='both')
-
-
 
     else:
 
@@ -493,7 +504,7 @@ def compare_convergences_collision2D(list_of_paths, list_of_names=None):
     # Parameters
     # **********
 
-    smooth_n = 4
+    smooth_n = 20
 
     if list_of_names is None:
         list_of_names = [str(i) for i in range(len(list_of_paths))]
@@ -502,226 +513,95 @@ def compare_convergences_collision2D(list_of_paths, list_of_names=None):
     # *********
 
     all_pred_epochs = []
-    all_mean_fe = []
-    all_last_fe = []
+    all_fe = []
+    all_bce = []
+    all_fp = []
+    all_fp_bce = []
+    all_fn = []
+    all_fn_bce = []
 
     # Load parameters
     config = Config()
     config.load(list_of_paths[0])
-    
+
     for path in list_of_paths:
 
         # Load config and saved results
-        future_errors = np.loadtxt(join(path, 'future_error.txt'))
-        print(future_errors.shape, future_errors.dtype)
+        metric_list = []
+        file_list = ['subpart_IoUs.txt',
+                     'val_IoUs.txt',
+                     'reconstruction_error.txt',
+                     'future_error.txt',
+                     'future_error_bce.txt',
+                     'future_FP.txt',
+                     'future_FN.txt',
+                     'future_FP_bce.txt',
+                     'future_FN_bce.txt']
+        max_epoch = 0
+        for filename in file_list:
+            try:
+                metric = np.loadtxt(join(path, filename))
+                max_epoch = max(max_epoch, metric.shape[0])
+                smoothed = running_mean(metric, smooth_n)
+            except OSError as e:
+                smoothed = np.zeros((0, 0), dtype=np.float64)
+            metric_list.append(smoothed)
+        (IoUs,
+         val_IoUs,
+         mean_recons_e,
+         mean_future_e,
+         mean_future_bce,
+         mean_future_FP,
+         mean_future_FN,
+         mean_future_FP_bce,
+         mean_future_FN_bce) = metric_list
 
-        max_epoch = future_errors.shape[0]
-
-        # Aggregate results
+        # Epoch count
         epochs_d = np.array([i for i in range(max_epoch)])
-        all_pred_epochs += [epochs_d[smooth_n:-smooth_n]]
-        all_mean_fe += [running_mean(np.mean(future_errors, axis=1), smooth_n)]
-        all_last_fe += [running_mean(future_errors[:, -1], smooth_n)]
-
-
-    # Plots
-    # *****
-
-    # Figure
-    fig = plt.figure('mean FE')
-    for i, name in enumerate(list_of_names):
-        p = plt.plot(all_pred_epochs[i], all_mean_fe[i], linewidth=1, label=name)
-    plt.xlabel('epochs')
-    plt.ylabel('mean_fe')
-
-    # Set limits for y axis
-    #plt.ylim(0.55, 0.95)
-
-    # Display legends and title
-    plt.legend()
-
-    # Customize the graph
-    ax = fig.gca()
-    ax.grid(linestyle='-.', which='both')
-    #ax.set_yticks(np.arange(0.8, 1.02, 0.02))
-
-    # Figure
-    fig = plt.figure('last FE')
-    for i, name in enumerate(list_of_names):
-        p = plt.plot(all_pred_epochs[i], all_last_fe[i], linewidth=1, label=name)
-    plt.xlabel('epochs')
-    plt.ylabel('last_fe')
-
-    # Set limits for y axis
-    #plt.ylim(0.55, 0.95)
-
-    # Display legends and title
-    plt.legend()
-
-    # Customize the graph
-    ax = fig.gca()
-    ax.grid(linestyle='-.', which='both')
-    #ax.set_yticks(np.arange(0.8, 1.02, 0.02))
-
-    # Show all
-    plt.show()
-
-    a = 1/0
-
-
-    for path in list_of_paths:
-
-        # Load or compute the gif results
-        folder_stats_file = join(path, 'log_stats_{:d}.pkl'.format(max_epoch))
-        if exists(folder_stats_file):
-            with open(folder_stats_file, 'rb') as file:
-                all_p, all_gt = pickle.load(file)
-
-        else:
-
-            folder = join(path, 'future_preds')
-
-            file_names = [f[:-4] for f in os.listdir(folder) if f.endswith('.npy')]
-            all_p = []
-            all_gt = []
-            for f_i, f_name in enumerate(file_names):
-
-                # read gt gif
-                gt_name = join(folder, f_name + '.npy')
-                im = imageio.get_reader(gt_name)
-                frames = []
-                for frame in im:
-                    frames.append(frame[::zoom, ::zoom, :3])
-                imgs = np.stack(frames)
-
-                # Get gt mask of moving objects
-                gt_mask = imgs[:, :, :, 0] > 1
-
-                # Morpho closing to reduce noise
-                struct2 = ndimage.generate_binary_structure(3, 2)
-                struct2[[0, 2], :, :] = False
-                gt_closed = ndimage.binary_closing(gt_mask, structure=struct2, iterations=3, border_value=1)
-
-                # Debug
-                #fig, anim = show_future_anim(gt_mask.astype(np.uint8) * 255)
-                #fig2, anim2 = show_future_anim(gt_closed.astype(np.uint8) * 255)
-                #plt.show()
-
-                # Load predictions
-                pre_name = join(folder, f_name + '_f_pre.gif')
-                im = imageio.get_reader(pre_name)
-                frames = []
-                for frame in im:
-                    frames.append(frame[::zoom, ::zoom, :3])
-                preds = np.stack(frames)
-
-                # Get moving predictions (with red/yellow colormap)
-                r = np.copy(preds[1:, :, :, 0]).astype(np.float32)
-                g = np.copy(preds[1:, :, :, 1]).astype(np.float32)
-                no_red_mask = r < 1
-                g[no_red_mask] = 0
-                p = (r + g) / (255 + 255)
-                gt = gt_closed[1:, :, :]
-
-                all_p.append(p)
-                all_gt.append(gt)
-
-                print(f_i, len(file_names))
-
-            # Stack and save these stats
-            all_p = np.stack(all_p)
-            all_gt = np.stack(all_gt)
-
-            with open(folder_stats_file, 'wb') as file:
-                pickle.dump([all_p, all_gt], file)
-
-
-
-
-
-
-        # Get validation IoUs
-        file = join(path, 'val_IoUs.txt')
-        val_IoUs = load_single_IoU(file, nc_model)
-
-        # Get Subpart IoUs
-        file = join(path, 'subpart_IoUs.txt')
-        subpart_IoUs = load_single_IoU(file, nc_model)
-
-        # Get mean IoU
-        val_class_IoUs, val_mIoUs = IoU_class_metrics(val_IoUs, smooth_n)
-        subpart_class_IoUs, subpart_mIoUs = IoU_class_metrics(subpart_IoUs, smooth_n)
 
         # Aggregate results
-        all_pred_epochs += [np.array([i for i in range(len(val_IoUs))])]
-        all_val_mIoUs += [val_mIoUs]
-        all_val_class_IoUs += [val_class_IoUs]
-        all_subpart_mIoUs += [subpart_mIoUs]
-        all_subpart_class_IoUs += [subpart_class_IoUs]
-
-        s = '{:^6.1f}|'.format(100*subpart_mIoUs[-1])
-        for IoU in subpart_class_IoUs[-1]:
-            s += '{:^6.1f}'.format(100*IoU)
-        print(s)
-
-    print(6*'-' + '|' + 6*config.num_classes*'-')
-    for snap_IoUs in all_val_class_IoUs:
-        if len(snap_IoUs) > 0:
-            s = '{:^6.1f}|'.format(100*np.mean(snap_IoUs[-1]))
-            for IoU in snap_IoUs[-1]:
-                s += '{:^6.1f}'.format(100*IoU)
-        else:
-            s = '{:^6s}'.format('-')
-            for _ in range(config.num_classes):
-                s += '{:^6s}'.format('-')
-        print(s)
+        all_pred_epochs += [epochs_d[smooth_n:-smooth_n]]
+        all_fe += [mean_future_e]
+        all_bce += [mean_future_bce]
+        all_fp += [mean_future_FP]
+        all_fp_bce += [mean_future_FP_bce]
+        all_fn += [mean_future_FN]
+        all_fn_bce += [mean_future_FN_bce]
 
     # Plots
     # *****
 
-    # Figure
-    fig = plt.figure('mIoUs')
-    for i, name in enumerate(list_of_names):
-        p = plt.plot(all_pred_epochs[i], all_subpart_mIoUs[i], '--', linewidth=1, label=name)
-        plt.plot(all_pred_epochs[i], all_val_mIoUs[i], linewidth=1, color=p[-1].get_color())
-    plt.xlabel('epochs')
-    plt.ylabel('IoU')
+    # create plots
 
-    # Set limits for y axis
-    #plt.ylim(0.55, 0.95)
-
-    # Display legends and title
-    plt.legend(loc=4)
-
-    # Customize the graph
-    ax = fig.gca()
-    ax.grid(linestyle='-.', which='both')
-    #ax.set_yticks(np.arange(0.8, 1.02, 0.02))
-
-    for c_i, c_name in enumerate(class_list):
-        if c_i in displayed_classes:
-
-            # Figure
-            fig = plt.figure(c_name + ' IoU')
+    for reduc in ['mean']:
+        for error, error_name in zip([all_fe, all_bce, all_fp, all_fp_bce, all_fn, all_fn_bce],
+                                     ['all_fe', 'all_bce', 'all_fp', 'all_fp_bce', 'all_fn', 'all_fn_bce']):
+            fig = plt.figure(reduc + ' ' + error_name[4:])
             for i, name in enumerate(list_of_names):
-                plt.plot(all_pred_epochs[i], all_val_class_IoUs[i][:, c_i], linewidth=1, label=name)
+                if error[i].shape[0] > 0:
+                    if reduc == 'last':
+                        plotted_e = error[i][:, -1]
+                    else:
+                        plotted_e = np.mean(error[i], axis=1)
+                else:
+                    plotted_e = all_pred_epochs[i] * 0
+                p = plt.plot(all_pred_epochs[i], plotted_e, linewidth=1, label=name)
+
             plt.xlabel('epochs')
-            plt.ylabel('IoU')
+            plt.ylabel(reduc + ' ' + error_name[4:])
 
             # Set limits for y axis
-            #plt.ylim(0.8, 1)
+            #plt.ylim(0.55, 0.95)
 
             # Display legends and title
-            plt.legend(loc=4)
+            plt.legend()
 
             # Customize the graph
             ax = fig.gca()
             ax.grid(linestyle='-.', which='both')
             #ax.set_yticks(np.arange(0.8, 1.02, 0.02))
 
-
-
-    # Show all
+    # Show all -------------------------------------------------------------------
     plt.show()
 
     return
@@ -737,20 +617,9 @@ def prediction_evolution_plot(chosen_log):
     config = Config()
     config.load(chosen_log)
 
-    # Set which gpu is going to be used
-    GPU_ID = '0'
-
-    # Set GPU visible device
-    os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
-    
     # Find all checkpoints in the chosen training folder
     chkp_path = join(chosen_log, 'checkpoints')
     chkps = np.sort([join(chkp_path, f) for f in listdir(chkp_path) if f[:4] == 'chkp'])
-
-    print()
-    print(chkps)
-    print()
-    print()
 
     # Get training and validation days
     val_path = join(chosen_log, 'val_preds')
@@ -762,8 +631,9 @@ def prediction_evolution_plot(chosen_log):
     fake_loss = FakeColliderLoss(config)
 
     # Result folder
-    if not exists(join(config.saving_path, 'test_visu')):
-        makedirs(join(config.saving_path, 'test_visu'))
+    visu_path = join(config.saving_path, 'test_visu')
+    if not exists(visu_path):
+        makedirs(visu_path)
 
     ##################################
     # Change model parameters for test
@@ -771,154 +641,326 @@ def prediction_evolution_plot(chosen_log):
 
     # Change parameters for the test here. For example, you can stop augmenting the input data.
     config.augment_noise = 0
-    augment_scale_min = 1.0
-    augment_scale_max = 1.0
+    config.augment_scale_min = 1.0
+    config.augment_scale_max = 1.0
     config.augment_symmetries = [False, False, False]
     config.augment_rotation = 'none'
     config.validation_size = 100
-    
+
     ##########################################
     # Choice of the image we want to visualize
     ##########################################
 
-    # TODO
-    wanted_inds = [50, 100, 150]
-    
-    ###########################
-    # Initialize model and data
-    ###########################
-
     # Dataset
     test_dataset = MyhalCollisionDataset(config, val_days, chosen_set='validation', balance_classes=False)
 
-    # Specific sampler with pred inds
-    test_sampler = MyhalCollisionSamplerTest(test_dataset, wanted_inds)
-    test_loader = DataLoader(test_dataset,
-                             batch_size=1,
-                             sampler=test_sampler,
-                             collate_fn=MyhalCollisionCollate,
-                             num_workers=config.input_threads,
-                             pin_memory=True)
+    wanted_inds = [100, 150, 800]
+    wanted_s_inds = [test_dataset.all_inds[ind][0] for ind in wanted_inds]
+    wanted_f_inds = [test_dataset.all_inds[ind][1] for ind in wanted_inds]
+    sf_to_i = {tuple(test_dataset.all_inds[ind]): i for i, ind in enumerate(wanted_inds)}
 
-    # Calibrate samplers
-    if config.max_val_points < 0:
-        config.max_val_points = 1e9
-        test_loader.dataset.max_in_p = 1e9
-        test_sampler.calib_max_in(config, test_loader, untouched_ratio=0.95, verbose=True)
-    test_sampler.calibration(test_loader, verbose=True)
+    ####################################
+    # Preload to avoid long computations
+    ####################################
 
-    # Init model
-    net = KPCollider(config, test_dataset.label_values, test_dataset.ignored_labels)
+    # List all precomputed preds:
+    saved_preds = np.sort([f for f in listdir(visu_path) if f.endswith('.pkl')])
+    saved_pred_inds = [int(f[:-4].split('_')[-1]) for f in saved_preds]
 
-    # Define a visualizer class
-    tester = ModelTester(net, chkp_path=chkps[-1])
+    # Load if available
+    if np.all([ind in saved_pred_inds for ind in wanted_inds]):
 
-    # Choose to train on CPU or GPU
-    if torch.cuda.is_available():
-        device = torch.device("cuda:0")
-        net.to(device)
+        print('\nFound previous predictions, loading them')
+
+        all_preds = []
+        all_gts = []
+        for ind in wanted_inds:
+            wanted_ind_file = join(visu_path, 'preds_{:08d}.pkl'.format(ind))
+            with open(wanted_ind_file, 'rb') as wfile:
+                ind_preds, ind_gts = pickle.load(wfile)
+            all_preds.append(ind_preds)
+            all_gts.append(ind_gts)
+        all_preds = np.stack(all_preds, axis=1)
+        all_gts = np.stack(all_gts, axis=0)
+
+    ########
+    # Or ...
+    ########
+
     else:
-        device = torch.device("cpu")
 
-    # Force batch size to be 1
-    test_dataset.batch_limit = 1
+        ############
+        # Choose GPU
+        ############
 
-    ######################################
-    # Start predictions with ckpts weights
-    ######################################
+        # Set which gpu is going to be used (auto for automatic choice)
+        GPU_ID = 'auto'
 
-    all_preds = []
+        # Automatic choice (need pynvml to be installed)
+        if GPU_ID == 'auto':
+            print('\nSearching a free GPU:')
+            for i in range(torch.cuda.device_count()):
+                a = torch.cuda.list_gpu_processes(i)
+                print(torch.cuda.list_gpu_processes(i))
+                a = a.split()
+                if a[1] == 'no':
+                    GPU_ID = a[0][-1:]
 
-    for chkp_i, chkp in enumerate(chkps[:5]):
+        # Safe check no free GPU
+        if GPU_ID == 'auto':
+            print('\nNo free GPU found!\n')
+            a = 1 / 0
 
-        # Load new checkpoint weights
-        if torch.cuda.is_available():
-            checkpoint = torch.load(chkp)
         else:
-            checkpoint = torch.load(chkp, map_location={'cuda:0': 'cpu'})
-        net.load_state_dict(checkpoint['model_state_dict'])
-        epoch_i = checkpoint['epoch'] + 1
-        net.eval()
-        print("\nModel and training state restored from " + chkp)
+            print('\nUsing GPU:', GPU_ID, '\n')
 
-        chkp_preds = []
+        # Set GPU visible device
+        os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
+        chosen_gpu = int(GPU_ID)
 
-        # Predict wanted inds with this chkp
-        for i, batch in enumerate(test_loader):
+        ###########################
+        # Initialize model and data
+        ###########################
 
-            print(i, len(batch.scales), batch.scales)
+        # Specific sampler with pred inds
+        test_sampler = MyhalCollisionSamplerTest(test_dataset, wanted_inds)
+        test_loader = DataLoader(test_dataset,
+                                 batch_size=1,
+                                 sampler=test_sampler,
+                                 collate_fn=MyhalCollisionCollate,
+                                 num_workers=config.input_threads,
+                                 pin_memory=True)
 
-            if 'cuda' in device.type:
-                batch.to(device)
+        # Calibrate samplers
+        if config.max_val_points < 0:
+            config.max_val_points = 1e9
+            test_loader.dataset.max_in_p = 1e9
+            test_sampler.calib_max_in(config, test_loader, untouched_ratio=0.95, verbose=True)
+        test_sampler.calibration(test_loader, verbose=True)
 
-            # Forward pass
-            outputs, preds_init_2D, preds_2D = net(batch, config)
+        # Init model
+        net = KPCollider(config, test_dataset.label_values, test_dataset.ignored_labels)
 
-            # Get probs and labels
-            f_inds = batch.frame_inds.cpu().numpy()
-            stck_init_preds = sigmoid_2D(preds_init_2D).cpu().detach().numpy()
-            stck_future_logits = preds_2D.cpu().detach().numpy()
-            stck_future_preds = sigmoid_2D(preds_2D).cpu().detach().numpy()
-            stck_future_gts = batch.future_2D.cpu().detach().numpy()
-            torch.cuda.synchronize(device)
+        # Choose to train on CPU or GPU
+        if torch.cuda.is_available():
+            device = torch.device("cuda:{:d}".format(chosen_gpu))
+            net.to(device)
+        else:
+            device = torch.device("cpu")
 
-            # Get the 2D predictions and gt (init_2D)
-            b_i = 0
-            img0 = stck_init_preds[b_i, 0, :, :, :]
-            gt_im0 = np.copy(stck_future_gts[b_i, 0, :, :, :])
-            gt_im1 = stck_future_gts[b_i, 0, :, :, :]
-            gt_im1[:, :, 2] = np.max(stck_future_gts[b_i, 1:, :, :, 2], axis=0)
-            img1 = stck_init_preds[b_i, 1, :, :, :]
+        ######################################
+        # Start predictions with ckpts weights
+        ######################################
 
-            # Get the 2D predictions and gt (prop_2D)
-            img = stck_future_preds[b_i, :, :, :, :]
-            gt_im = stck_future_gts[b_i, 1:, :, :, :]
+        all_preds = []
+        all_gts = [None for _ in wanted_inds]
 
-            # Future errors defined the same as the loss
-            future_errors_bce = fake_loss.apply(gt_im, stck_future_logits[b_i, :, :, :, :], error='bce')
-            future_errors = fake_loss.apply(gt_im, stck_future_logits[b_i, :, :, :, :], error='linear')
-            future_errors = np.concatenate((future_errors_bce, future_errors), axis=0)
+        for chkp_i, chkp in enumerate(chkps):
 
-            # # Save prediction too in gif format
-            # s_ind = f_inds[b_i, 0]
-            # f_ind = f_inds[b_i, 1]
-            # filename = '{:s}_{:07d}_e{:04d}.npy'.format(test_dataset.sequences[s_ind], f_ind, epoch_i)
-            # gifpath = join(config.saving_path, 'test_visu', filename)
-            # fast_save_future_anim(gifpath[:-4] + '_f_gt.gif', gt_im, zoom=5, correction=True)
-            # fast_save_future_anim(gifpath[:-4] + '_f_pre.gif', img, zoom=5, correction=True)
+            # Load new checkpoint weights
+            if torch.cuda.is_available():
+                checkpoint = torch.load(chkp, map_location=device)
+            else:
+                checkpoint = torch.load(chkp, map_location=torch.device('cpu'))
+            net.load_state_dict(checkpoint['model_state_dict'])
+            epoch_i = checkpoint['epoch'] + 1
+            net.eval()
+            print("\nModel and training state restored from " + chkp)
+
+            chkp_preds = [None for _ in wanted_inds]
+
+            # Predict wanted inds with this chkp
+            for i, batch in enumerate(test_loader):
+
+                if 'cuda' in device.type:
+                    batch.to(device)
+
+                # Forward pass
+                outputs, preds_init_2D, preds_2D = net(batch, config)
+
+                # Get probs and labels
+                f_inds = batch.frame_inds.cpu().numpy()
+                lengths = batch.lengths[0].cpu().numpy()
+                stck_init_preds = sigmoid_2D(preds_init_2D).cpu().detach().numpy()
+                stck_future_logits = preds_2D.cpu().detach().numpy()
+                stck_future_preds = sigmoid_2D(preds_2D).cpu().detach().numpy()
+                stck_future_gts = batch.future_2D.cpu().detach().numpy()
+                torch.cuda.synchronize(device)
+
+                # Loop on batch
+                i0 = 0
+                for b_i, length in enumerate(lengths):
+
+                    # Get the 2D predictions and gt (init_2D)
+                    img0 = stck_init_preds[b_i, 0, :, :, :]
+                    gt_im0 = np.copy(stck_future_gts[b_i, 0, :, :, :])
+                    gt_im1 = stck_future_gts[b_i, 0, :, :, :]
+                    gt_im1[:, :, 2] = np.max(stck_future_gts[b_i, 1:, :, :, 2], axis=0)
+                    img1 = stck_init_preds[b_i, 1, :, :, :]
+                    s_ind = f_inds[b_i, 0]
+                    f_ind = f_inds[b_i, 1]
+
+                    # Get the 2D predictions and gt (prop_2D)
+                    img = stck_future_preds[b_i, :, :, :, :]
+                    gt_im = stck_future_gts[b_i, 1:, :, :, :]
+
+                    # # Future errors defined the same as the loss
+                    future_errors_bce = fake_loss.apply(gt_im, stck_future_logits[b_i, :, :, :, :], error='bce')
+                    # future_errors = fake_loss.apply(gt_im, stck_future_logits[b_i, :, :, :, :], error='linear')
+                    # future_errors = np.concatenate((future_errors_bce, future_errors), axis=0)
+
+                    # # Save prediction too in gif format
+                    # s_ind = f_inds[b_i, 0]
+                    # f_ind = f_inds[b_i, 1]
+                    # filename = '{:s}_{:07d}_e{:04d}.npy'.format(test_dataset.sequences[s_ind], f_ind, epoch_i)
+                    # gifpath = join(config.saving_path, 'test_visu', filename)
+                    # fast_save_future_anim(gifpath[:-4] + '_f_gt.gif', gt_im, zoom=5, correction=True)
+                    # fast_save_future_anim(gifpath[:-4] + '_f_pre.gif', img, zoom=5, correction=True)
+
+                    # Store all predictions
+                    chkp_preds[sf_to_i[(s_ind, f_ind)]] = img
+                    if chkp_i == 0:
+                        all_gts[sf_to_i[(s_ind, f_ind)]] = gt_im
+
+                    if np.all([chkp_pred is not None for chkp_pred in chkp_preds]):
+                        break
+
+                if np.all([chkp_pred is not None for chkp_pred in chkp_preds]):
+                    break
 
             # Store all predictions
-            chkp_preds.append(img)
+            chkp_preds = np.stack(chkp_preds, axis=0)
+            all_preds.append(chkp_preds)
 
-        # Store all predictions
-        chkp_preds = np.stack(chkp_preds, axis=0)
-        all_preds.append(chkp_preds)
-        
-    # All predictions shape: [chkp_n, frames_n, T, H, W, 3]
-    all_preds = np.stack(all_preds, axis=0)
+        # All predictions shape: [chkp_n, frames_n, T, H, W, 3]
+        all_preds = np.stack(all_preds, axis=0)
+
+        # All gts shape: [frames_n, T, H, W, 3]
+        all_gts = np.stack(all_gts, axis=0)
+
+        # Save each preds
+        for ind_i, ind in enumerate(wanted_inds):
+            wanted_ind_file = join(visu_path, 'preds_{:08d}.pkl'.format(ind))
+            with open(wanted_ind_file, 'wb') as wfile:
+                pickle.dump((all_preds[:, ind_i], all_gts[ind_i]), wfile)
 
     ################
     # Visualizations
     ################
 
-    # First idea: evolution of the gif
-    
+    # First idea: future for different chkp
+    idea1 = True
+    if idea1:
 
-    a = 1/0
+        for frame_i, _ in enumerate(wanted_inds):
 
-    
+            # Colorize and zoom both preds and gts
+            showed_preds = colorize_collisions(all_preds[:, frame_i])
+            showed_preds = zoom_collisions(showed_preds, 5)
+            showed_gts = colorize_collisions(all_gts[frame_i])
+            showed_gts = zoom_collisions(showed_gts, 5)
+            
+            # Repeat gt for all checkpoints and merge with preds
+            showed_gts = np.expand_dims(showed_gts, 0)
+            showed_gts = np.tile(showed_gts, (showed_preds.shape[0], 1, 1, 1, 1))
+            merged_imgs = superpose_gt(showed_preds, showed_gts)
 
+            c_showed = [0, 5, 10, -1]
+            n_showed = len(c_showed)
+
+            fig, axes = plt.subplots(1, n_showed)
+            images = []
+            for ax_i, chkp_i in enumerate(c_showed):
+                images.append(axes[ax_i].imshow(merged_imgs[chkp_i, 0]))
+
+            def animate(i):
+                for ax_i, chkp_i in enumerate(c_showed):
+                    images[ax_i].set_array(merged_imgs[chkp_i, i])
+                return images
+
+            anim = FuncAnimation(fig, animate,
+                                 frames=np.arange(merged_imgs.shape[1]),
+                                 interval=50,
+                                 blit=True)
+
+            plt.show()
+
+            # SAME BUT COMPARE MULTIPLE LOGS AT THE END OF THEIR CONFERGENCE
+
+    # Second idea: evolution of prediction for different timestamps
+    idea2 = False
+    if idea2:
+
+        for frame_i, _ in enumerate(wanted_inds):
+
+            # Colorize and zoom both preds and gts
+            showed_preds = colorize_collisions(all_preds[:, frame_i])
+            showed_preds = zoom_collisions(showed_preds, 5)
+            showed_gts = colorize_collisions(all_gts[frame_i])
+            showed_gts = zoom_collisions(showed_gts, 5)
+
+            # Repeat gt for all checkpoints and merge with preds
+            showed_gts = np.expand_dims(showed_gts, 0)
+            showed_gts = np.tile(showed_gts, (showed_preds.shape[0], 1, 1, 1, 1))
+            merged_imgs = superpose_gt(showed_preds, showed_gts)
+
+            t_showed = [2, 10, 18, 26]
+            n_showed = len(t_showed)
+
+            fig, axes = plt.subplots(1, n_showed)
+            images = []
+            for t, ax in zip(t_showed, axes):
+                images.append(ax.imshow(merged_imgs[0, t]))
+
+            # Add progress rectangles
+            xy = (0.2 * merged_imgs.shape[-3], 0.015 * merged_imgs.shape[-2])
+            dx = 0.6 * merged_imgs.shape[-3]
+            dy = 0.025 * merged_imgs.shape[-2]
+            rect1 = patches.Rectangle(xy, dx, dy, linewidth=1, edgecolor='white', facecolor='white')
+            rect2 = patches.Rectangle(xy, dx * 0.01, dy, linewidth=1, edgecolor='white', facecolor='green')
+            axes[0].add_patch(rect1)
+            axes[0].add_patch(rect2)
+            images.append(rect1)
+            images.append(rect2)
+
+            def animate(i):
+                for t_i, t in enumerate(t_showed):
+                    images[t_i].set_array(merged_imgs[i, t])
+                progress = float(i + 1) / merged_imgs.shape[0]
+                images[-1].set_width(dx * progress)
+                return images
+
+            n_gif = merged_imgs.shape[0]
+            animation_frames = np.arange(n_gif)
+            animation_frames = np.pad(animation_frames, 10, mode='edge')
+            anim = FuncAnimation(fig, animate,
+                                 frames=animation_frames,
+                                 interval=100,
+                                 blit=True)
+
+            plt.show()
+
+    # # Create superposition of gt and preds
+    # r = preds[:, :, :, 0]
+    # g = preds[:, :, :, 1]
+    # b = preds[:, :, :, 2]
+    # r[gt_mask] += 0
+    # g[gt_mask] += 0
+    # b[gt_mask] += 255
+
+    # # Compute precision recall curves
+    # figPR = show_PR(p, gt)
+
+    # #fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    # #anim0 = anim_multi_PR(p, gt, axis=axes[0])
+    # #anim = show_future_anim(preds, axis=axes[1])
+    # fig, double_anim = anim_PR_gif(preds, p, gt)
+
+    # plt.show()
+
+    a = 1 / 0
 
     return
-
-
-
-
-
-
-
-
-
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -935,8 +977,7 @@ def collider_tests_1(old_result_limit):
 
     # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
     start = 'Log_2021-04-14_18-48-28'
-    end = 'Log_2021-09-15_17-03-17'
-    
+    end = 'Log_2021-04-21_15-05-54'
 
     if end < old_result_limit:
         res_path = 'old_results'
@@ -952,7 +993,37 @@ def collider_tests_1(old_result_limit):
                   'Bouncer-Loss=0.5/4-NEW_METRIC',
                   'Bouncer-Loss=1/2-NEW_METRIC',
                   'Bouncer-Loss=1/2-NEW_METRIC',
+                  'Bouncer-Loss=1/2-NEW_METRIC',
                   'test'
+                  ]
+
+    logs_names = np.array(logs_names[:len(logs)])
+
+    return logs, logs_names
+
+
+def collider_tests_2(old_result_limit):
+    """
+    Nouveau loss, et nouvelles valeur de validation pour ces tests
+    """
+
+    # Using the dates of the logs, you can easily gather consecutive ones. All logs should be of the same dataset.
+    start = 'Log_2021-04-21_15-05-54'
+    end = 'Log_2021-04-25_17-03-17'
+
+    if end < old_result_limit:
+        res_path = 'old_results'
+    else:
+        res_path = 'results'
+
+    logs = np.sort([join(res_path, log) for log in listdir(res_path) if start <= log <= end])
+    logs = logs.astype('<U50')
+
+    # Give names to the logs (for legends)
+    logs_names = ['Bouncer-Loss=1/2-v2',
+                  'Bouncer-Loss=1/2-v0',
+                  'Bouncer-Loss=1/2-v1',
+                  'Bouncer-5frames-Loss=1/8-v2',
                   ]
 
     logs_names = np.array(logs_names[:len(logs)])
@@ -977,9 +1048,8 @@ if __name__ == '__main__':
     old_res_lim = 'Log_2020-05-04_19-17-59'
 
     # My logs: choose the logs to show
-    logs, logs_names = collider_tests_1(old_res_lim)
+    logs, logs_names = collider_tests_2(old_res_lim)
     #os.environ['QT_DEBUG_PLUGINS'] = '1'
-
 
     ######################################################
     # Choose a list of log to plot together for comparison
@@ -1002,21 +1072,22 @@ if __name__ == '__main__':
 
     ################
     # Plot functions
-    ################
+    # ##############
 
-    # Evolution of predictions from checkpoints to checkpoints
-    prediction_evolution_plot(logs[-1])
+    gifs = False
 
-    # # Plot the training loss and accuracy
-    # compare_trainings(logs, logs_names)
+    if gifs == True:
 
-    # # Plot the validation
-    # if config.dataset_task == 'collision_prediction':
-    #     if config.dataset.startswith('MyhalCollision'):
-    #         compare_convergences_collision2D(logs, logs_names)
-    # else:
-    #     raise ValueError('Unsupported dataset : ' + plot_dataset)
+        # Evolution of predictions from checkpoints to checkpoints
+        prediction_evolution_plot(logs[0])
 
 
+    # Plot the training loss and accuracy
+    compare_trainings(logs, logs_names)
 
-
+    # Plot the validation
+    if config.dataset_task == 'collision_prediction':
+        if config.dataset.startswith('MyhalCollision'):
+            compare_convergences_collision2D(logs, logs_names)
+    else:
+        raise ValueError('Unsupported dataset : ' + plot_dataset)
