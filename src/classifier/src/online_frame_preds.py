@@ -40,7 +40,10 @@ sys.path.insert(0, join(ENV_HOME, "catkin_ws/src/classifier/src/kernels"))
 import torch
 import pickle
 import time
-os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ.update(OMP_NUM_THREADS='1',
+                  OPENBLAS_NUM_THREADS='1',
+                  NUMEXPR_NUM_THREADS='1',
+                  MKL_NUM_THREADS='1',)
 import numpy as np
 
 # Useful classes

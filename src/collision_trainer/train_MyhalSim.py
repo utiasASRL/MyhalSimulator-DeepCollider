@@ -24,7 +24,10 @@
 # Common libs
 import signal
 import os
-os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ.update(OMP_NUM_THREADS='1',
+                  OPENBLAS_NUM_THREADS='1',
+                  NUMEXPR_NUM_THREADS='1',
+                  MKL_NUM_THREADS='1',)
 import numpy as np
 import sys
 import torch
