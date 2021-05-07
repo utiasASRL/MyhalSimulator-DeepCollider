@@ -24,6 +24,7 @@
 # Common libs
 import os
 import torch
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import numpy as np
 import matplotlib.pyplot as plt
 from os.path import isfile, join, exists

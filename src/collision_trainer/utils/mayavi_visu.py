@@ -24,6 +24,7 @@
 
 # Basic libs
 import torch
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import numpy as np
 from sklearn.neighbors import KDTree
 from os import makedirs, remove, rename, listdir
@@ -994,8 +995,7 @@ def colorize_collisions(collision_imgs, k_background=True):
     resolution = 256
     shortT1 = np.array([1.0, 0, 0], dtype=np.float64)
     shortT2 = np.array([1.0, 1.0, 0], dtype=np.float64)
-    cmap_shortT = np.vstack((np.linspace(background, shortT1, resolution),
-                            np.linspace(shortT1, shortT2, resolution)))
+    cmap_shortT = np.vstack((np.linspace(background, shortT1, resolution), np.linspace(shortT1, shortT2, resolution)))
     cmap_shortT = (cmap_shortT * 255).astype(np.uint8)                        
     shortT = collision_imgs[..., 2]
     mask = shortT > 0.05
@@ -1070,23 +1070,64 @@ def save_zoom_img(im_name, img, zoom=1, correction=False, k_background=True):
     return
 
 
-def superpose_gt(pred_imgs, gt_imgs):
+def superpose_gt(pred_imgs, gt_imgs, ingt_imgs):
 
-    # Pred shape = [..., X, T, H, W, 3]
-    # gt_shape = [..., 1, T, H, W, 3]
+    # Pred shape = [..., T, H, W, 3]
+    #   gt_shape = [..., T, H, W, 3]
+    # ingt_shape = [..., n, H, W, 3]
 
-    # Get gt mask of moving objects
-    gt_mask = gt_imgs[..., 0] > 1
+    # Define color palette
+    background = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+    perma =  np.array([1.0, 1.0, 0.0], dtype=np.float64)
+    longT =  np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    shortT1 = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    shortT2 = np.array([1.0, 0.0, 1.0], dtype=np.float64)
+    gt_shortT = np.array([0.0, 1.0, 1.0], dtype=np.float64)
+    past_shortT = np.array([0.0, 1.0, 0.0], dtype=np.float64)
 
-    # Create superposition of gt and preds
-    r = pred_imgs[..., 0]
-    g = pred_imgs[..., 1]
-    b = pred_imgs[..., 2]
-    r[gt_mask] += 0
-    g[gt_mask] += 0
-    b[gt_mask] += 255
+    # Define colormaps
+    resolution = 256
+    cmap_perma = (np.linspace(background, perma, resolution) * 255).astype(np.uint8)
+    cmap_longT = (np.linspace(background, longT, resolution) * 255).astype(np.uint8)
+    cmap_gt_shortT = (np.linspace(background, gt_shortT, resolution) * 255).astype(np.uint8)
+    cmap_past_shortT = (np.linspace(background, past_shortT, resolution) * 255).astype(np.uint8)
+    cmap_shortT = np.vstack((np.linspace(background, shortT1, resolution), np.linspace(shortT1, shortT2, resolution)))
+    cmap_shortT = (cmap_shortT * 255).astype(np.uint8)
 
-    return pred_imgs
+    # Create past and future images
+    future_imgs = np.zeros_like(pred_imgs).astype(np.uint8)
+    past_imgs = np.zeros_like(ingt_imgs).astype(np.uint8)
+
+    # Color future image
+    for cmap, values in zip([cmap_perma, cmap_longT, cmap_shortT, cmap_gt_shortT],
+                            [pred_imgs[..., 0], pred_imgs[..., 1], pred_imgs[..., 2], gt_imgs[..., 2]]):
+        mask = values > 0.05
+        pooled_cmap = cmap[np.around(values * (cmap.shape[0] - 1)).astype(np.int32)]
+        future_imgs[mask] = np.minimum(future_imgs[mask] + pooled_cmap[mask], 255)
+
+    # Color past image
+    for cmap, values in zip([cmap_perma, cmap_longT, cmap_past_shortT],
+                            [ingt_imgs[..., 0], ingt_imgs[..., 1], ingt_imgs[..., 2]]):
+        mask = values > 0.05
+        pooled_cmap = cmap[np.around(values * (cmap.shape[0] - 1)).astype(np.int32)]
+        past_imgs[mask] = np.minimum(past_imgs[mask] + pooled_cmap[mask], 255)
+
+    # Concatenate past and future
+    all_imgs = np.concatenate((past_imgs, future_imgs), axis=-4)
+    
+    # Add ghost of the input
+    mask = np.sum(ingt_imgs[..., 2], axis=-3, keepdims=True) > 0.05
+    g = all_imgs[..., 1]
+    mask = np.tile(mask, (g.shape[-3], 1, 1))
+
+    fading_green = np.hstack([np.ones((ingt_imgs.shape[-4])) * 50, np.arange(50, 0, -5)])
+    fading_green = np.pad(fading_green, (0, g.shape[-3] - fading_green.shape[0]))
+    fading_green = np.reshape(fading_green, (-1, 1, 1))
+    fading_green = np.zeros_like(g) + fading_green
+
+    g[mask] = np.minimum(g[mask] + fading_green[mask], 255)
+
+    return all_imgs
 
 
 

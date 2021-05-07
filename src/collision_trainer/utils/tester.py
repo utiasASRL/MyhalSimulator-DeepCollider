@@ -25,6 +25,7 @@
 # Basic libs
 import torch
 import torch.nn as nn
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import numpy as np
 from os import makedirs, listdir
 from os.path import exists, join

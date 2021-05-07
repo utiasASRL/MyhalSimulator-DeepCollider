@@ -26,6 +26,7 @@ import sys
 import time
 import signal
 import os
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import numpy as np
 import torch
 
@@ -143,17 +144,17 @@ class MyhalCollisionConfig(Config):
     # Radius of the input sphere
     in_radius = 8.0
     val_radius = 8.0
-    n_frames = 5
+    n_frames = 3
+    in_features_dim = n_frames
     max_in_points = -1
     max_val_points = -1
 
     # Choice of input features
     first_features_dim = 100
-    in_features_dim = 5
 
     # Number of batch
-    batch_num = 4
-    val_batch_num = 4
+    batch_num = 6
+    val_batch_num = 6
 
     # Number of kernel points
     num_kernel_points = 15
@@ -201,7 +202,7 @@ class MyhalCollisionConfig(Config):
     # Learning rate management
     learning_rate = 1e-2
     momentum = 0.98
-    lr_decays = {i: 0.1 ** (1 / 200) for i in range(1, max_epoch)}
+    lr_decays = {i: 0.1 ** (1 / 120) for i in range(1, max_epoch)}
     grad_clip_norm = 100.0
 
     # Number of steps per epochs
@@ -217,8 +218,8 @@ class MyhalCollisionConfig(Config):
     augment_scale_anisotropic = False
     augment_symmetries = [False, False, False]
     augment_rotation = 'vertical'
-    augment_scale_min = 0.9
-    augment_scale_max = 1.1
+    augment_scale_min = 0.99
+    augment_scale_max = 1.01
     augment_noise = 0.001
     augment_color = 1.0
 
@@ -298,21 +299,21 @@ if __name__ == '__main__':
                     '2020-10-16-14-36-12',
                     '2020-10-16-14-56-40']
 
-    train_days_RandWand = ['2021-03-19-22-58-27',
-                           '2021-03-19-23-07-18',
-                           '2021-03-19-23-26-42',
-                           '2021-03-19-23-47-49',
-                           '2021-03-19-23-54-55',
-                           '2021-03-20-00-12-29',
-                           '2021-03-20-00-25-03',
-                           '2021-03-20-00-38-13',
-                           '2021-03-20-00-50-36',
-                           '2021-03-20-01-12-54',
-                           '2021-03-20-01-21-43',
-                           '2021-03-20-01-33-11',
-                           '2021-03-20-02-01-40',
-                           '2021-03-20-02-09-17',
-                           '2021-03-20-02-26-40']
+    # train_days_RandWand = ['2021-03-19-22-58-27',
+    #                        '2021-03-19-23-07-18',
+    #                        '2021-03-19-23-26-42',
+    #                        '2021-03-19-23-47-49',
+    #                        '2021-03-19-23-54-55',
+    #                        '2021-03-20-00-12-29',
+    #                        '2021-03-20-00-25-03',
+    #                        '2021-03-20-00-38-13',
+    #                        '2021-03-20-00-50-36',
+    #                        '2021-03-20-01-12-54',
+    #                        '2021-03-20-01-21-43',
+    #                        '2021-03-20-01-33-11',
+    #                        '2021-03-20-02-01-40',
+    #                        '2021-03-20-02-09-17',
+    #                        '2021-03-20-02-26-40']
 
     # train_days_RandFlow_old = ['2021-03-23-18-25-53',
     #                            '2021-03-23-18-46-44',
@@ -367,27 +368,45 @@ if __name__ == '__main__':
                            '2021-03-26-21-34-51',
                            '2021-03-26-22-20-38']
 
-    train_days_RandBounce = ['2021-04-12-15-10-19',
-                             '2021-04-12-15-34-52',
-                             '2021-04-12-16-22-40',
-                             '2021-04-12-17-20-23',
-                             '2021-04-12-17-42-45',
-                             '2021-04-12-18-25-47',
-                             '2021-04-12-19-08-58',
-                             '2021-04-12-19-32-40',
-                             '2021-04-12-20-10-47',
-                             '2021-04-12-21-13-04',
-                             '2021-04-12-21-39-16',
-                             '2021-04-12-22-13-09',
-                             '2021-04-12-22-59-57',
-                             '2021-04-12-23-28-00']
+    train_days_RandBounce = ['2021-04-28-18-23-06',
+                             '2021-04-28-18-47-43',
+                             '2021-04-28-19-39-19',
+                             '2021-04-28-20-21-31',
+                             '2021-04-28-20-47-04',
+                             '2021-04-28-21-35-47',
+                             '2021-04-28-22-49-13',
+                             '2021-04-28-23-20-09',
+                             '2021-04-29-00-09-28',
+                             '2021-04-29-01-07-16',
+                             '2021-04-29-01-29-55',
+                             '2021-04-29-13-57-12',
+                             '2021-04-29-14-18-35',
+                             '2021-04-29-15-04-42',
+                             '2021-04-29-16-02-50',
+                             '2021-04-29-16-34-37']
+
+    train_days_RandWand = ['2021-04-29-17-33-18',
+                           '2021-04-29-17-57-13',
+                           '2021-04-29-18-40-09',
+                           '2021-04-29-20-06-31',
+                           '2021-04-29-20-34-10',
+                           '2021-04-29-20-45-23',
+                           '2021-04-29-21-50-52',
+                           '2021-04-29-22-16-57',
+                           '2021-04-29-23-05-39',
+                           '2021-04-29-23-47-01',
+                           '2021-04-30-00-21-20',
+                           '2021-04-30-01-05-32',
+                           '2021-04-30-14-00-38',
+                           '2021-04-30-14-26-29',
+                           '2021-04-30-15-21-09']
 
     ######################
     # Automatic Annotation
     ######################
 
     # Choose the dataset
-    train_days = np.array(train_days_RandBounce)
+    train_days = np.array(train_days_RandWand)
     val_inds = [0, 1, 2]
     train_inds = [i for i in range(len(train_days)) if i not in val_inds]
 

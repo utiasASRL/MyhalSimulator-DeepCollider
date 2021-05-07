@@ -41,6 +41,7 @@ sys.path.insert(0, join(ENV_HOME, "catkin_ws/src/collision_checker/src/cpp_wrapp
 import torch
 import pickle
 import time
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import numpy as np
 import torch.multiprocessing as mp
 
@@ -51,6 +52,7 @@ from models.architectures import KPCollider
 from kernels.kernel_points import create_3D_rotations
 from torch.utils.data import DataLoader, Sampler
 from fast_collider_data import MyhalCollisionCollate, OnlineDataset, OnlineSampler
+from scipy import ndimage
 
 # ROS
 import rospy
@@ -96,6 +98,8 @@ class OnlineCollider():
         # Init ROS #
         ############
 
+        self.obstacle_range = 2.0
+
         rospy.init_node('fast_collider', anonymous=True)
 
         ######################
@@ -134,9 +138,9 @@ class OnlineCollider():
 
         # Load the pretrained weigths
         if on_gpu and torch.cuda.is_available():
-            checkpoint = torch.load(chkp_path)
+            checkpoint = torch.load(chkp_path, map_location=self.device)
         else:
-            checkpoint = torch.load(chkp_path, map_location={'cuda:0': 'cpu'})
+            checkpoint = torch.load(chkp_path, map_location=torch.device('cpu'))
         self.net.load_state_dict(checkpoint['model_state_dict'])
 
         # Switch network from training to evaluation mode
@@ -162,7 +166,7 @@ class OnlineCollider():
         print('OK\n')
 
         # Init collision publisher
-        self.collision_pub = rospy.Publisher('/collision_preds', VoxGrid, queue_size=10)
+        self.collision_pub = rospy.Publisher('/plan_costmap_3D', VoxGrid, queue_size=10)
         self.visu_pub = rospy.Publisher('/collision_visu', OccupancyGrid, queue_size=10)
         self.time_resolution = self.config.T_2D / self.config.n_2D_layers
 
@@ -212,22 +216,23 @@ class OnlineCollider():
 
 
         if frame_recieved:
-            #print(frame_recieved)
 
             # Get the time stamps for all frames
             for f_i, data in enumerate(self.online_dataset.frame_queue):
 
                 if self.online_dataset.pose_queue[f_i] is None:
                     pose = None
-                    while pose is None and (rospy.get_rostime() < data[0] + rospy.Duration(1.0)):
+                    look_i = 0
+                    while pose is None and (rospy.get_rostime() < data[0] + rospy.Duration(1.0)) and look_i < 50:
                         try:
                             pose = self.tfBuffer.lookup_transform('map', 'velodyne', data[0])
                             print('{:^35s}'.format('stamp {:.3f} read at {:.3f}'.format(pose.header.stamp.to_sec(), rospy.get_rostime().to_sec())), 35*' ', 35*' ')
                         except (tf2_ros.InvalidArgumentException, tf2_ros.LookupException, tf2_ros.ExtrapolationException) as e:
-                            print(e)
-                            print(rospy.get_rostime(), data[0] + rospy.Duration(1.0))
+                            #print(e)
+                            #print(rospy.get_rostime(), data[0] + rospy.Duration(1.0))
                             time.sleep(0.001)
                             pass
+                        look_i += 1
 
                     with self.online_dataset.worker_lock:
                         self.online_dataset.pose_queue[f_i] = pose
@@ -291,6 +296,14 @@ class OnlineCollider():
 
                 t = [time.time()]
 
+                # Check that ros master is still up
+                try:
+                    topics = rospy.get_published_topics()
+                except ConnectionRefusedError as e:
+                    print('Lost connection to master. Terminate collider')
+                    break
+
+                # Check if batch is a dummy
                 if len(batch.points) < 1:
                     print(35*' ', 35*' ', '{:^35s}'.format('GPU : Corrupted batch skipped'))
                     time.sleep(0.5)
@@ -327,14 +340,25 @@ class OnlineCollider():
                 # stck_init_preds = sigmoid_2D(preds_init).cpu().detach().numpy()
                 # stck_init_preds = stck_init_preds[0, 0, :, :, :]
                 # stck_future_preds[:, :, :, :2] = np.expand_dims(stck_init_preds[:, :, :2], 0)
+                
+                # Diffuse the collision risk to create a simili-signed-distance-function
+                fixed_obstacles = np.sum(stck_future_preds[:, :, :, :3], axis=-1) < 0.5
+                fixed_obstacles_dist = []
+                for i in range(fixed_obstacles.shape[0]):
+                    slice_dist = ndimage.distance_transform_edt(fixed_obstacles[i])
+                    fixed_obstacles_dist.append(slice_dist)
+                fixed_obstacles_dist = np.stack(fixed_obstacles_dist, 0)
+
+                fixed_obstacles_func = np.clip(1.0 - fixed_obstacles_dist * self.config.dl_2D / self.obstacle_range, 0, 1)
 
                 # Convert to uint8 for message 0-254 = prob, 255 = fixed obstacle
-                fixed_preds = np.sum(stck_future_preds[:, :, :, :2] > 0.5, axis=-1).astype(np.uint8) * 255
+                fixed_preds = (fixed_obstacles_func * 255).astype(np.uint8)
                 moving_preds = (stck_future_preds[:, :, :, 2] * 255).astype(np.uint8)
                 collision_preds = np.maximum(fixed_preds, moving_preds)
 
+
                 # Publish collision in a custom message
-                #self.publish_collisions(collision_preds, batch.t0, batch.p0, batch.q0)
+                self.publish_collisions(collision_preds, batch.t0, batch.p0, batch.q0)
                 self.publish_collisions_visu(collision_preds, batch.t0, batch.p0, batch.q0)
 
                 t += [time.time()]
@@ -421,7 +445,7 @@ class OnlineCollider():
     def publish_collisions(self, collision_preds, t0, p0, q0):
 
         # Get origin and orientation
-        origin0 = p0 #- self.config.in_radius / np.sqrt(2)
+        origin0 = p0 - self.config.in_radius / np.sqrt(2)
 
         # Define header
         msg = VoxGrid()
@@ -437,8 +461,12 @@ class OnlineCollider():
         msg.origin.x = origin0[0]
         msg.origin.y = origin0[1]
         msg.origin.z = t0
-        msg.theta = q0[0]
-        msg.data = collision_preds.ravel()
+
+        #msg.theta = q0[0]
+        msg.theta = 0
+
+        msg.data = collision_preds.ravel().tolist()
+
 
         # Publish
         self.collision_pub.publish(msg)

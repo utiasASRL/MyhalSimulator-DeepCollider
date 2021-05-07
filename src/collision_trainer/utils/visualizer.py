@@ -24,6 +24,7 @@
 
 # Basic libs
 import torch
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import numpy as np
 from sklearn.neighbors import KDTree
 from os import makedirs, remove, rename, listdir

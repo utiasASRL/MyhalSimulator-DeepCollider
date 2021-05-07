@@ -21,6 +21,7 @@
 #       \**********************************/
 #
 
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import numpy as np
 
 import cpp_wrappers.cpp_polar_normals.polar_processing as cpp_polar_processing

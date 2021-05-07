@@ -16,6 +16,7 @@
 
 from models.blocks import KPConv, UnaryBlock, block_decider, LRFBlock, GlobalAverageBlock, \
     ProjectorBlock, Propagation2DBlock, Initial2DBlock
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import numpy as np
 import time
 import torch
@@ -1207,6 +1208,7 @@ class KPCollider(nn.Module):
         self.intermediate_features = []
 
         # 2D parameters
+        self.n_frames = config.n_frames
         self.criterion_2D = torch.nn.BCEWithLogitsLoss()
         self.unreducted_criterion_2D = torch.nn.BCEWithLogitsLoss(reduction='none')
         self.sigmoid = torch.nn.Sigmoid()
@@ -1394,11 +1396,11 @@ class KPCollider(nn.Module):
             # Only apply loss to part of the empyty space to reduce unbalanced classes
 
             # Init loss for initial class probablitities => shapes = [B, 1, L_2D, L_2D, 3]
-            self.init_2D_loss = self.power_2D_init_loss * self.criterion_2D(preds_init_2D[:, 0, :, :, :], batch.future_2D[:, 0, :, :, :])
+            self.init_2D_loss = self.power_2D_init_loss * self.criterion_2D(preds_init_2D[:, 0, :, :, :], batch.future_2D[:, self.n_frames - 1, :, :, :])
 
             # Init loss for merged future class probablitities => shapes = [B, 1, L_2D, L_2D, 3]
-            merged_future = batch.future_2D[:, 0, :, :, :].detach().clone()
-            max_v, _ = torch.max(batch.future_2D[:, 1:, :, :, 2], dim=1)
+            merged_future = batch.future_2D[:, self.n_frames - 1, :, :, :].detach().clone()
+            max_v, _ = torch.max(batch.future_2D[:, :, :, :, 2], dim=1)
             merged_future[:, :, :, 2] = max_v
             self.init_2D_loss += self.power_2D_init_loss * self.criterion_2D(preds_init_2D[:, 1, :, :, :], merged_future)
             
@@ -1412,7 +1414,7 @@ class KPCollider(nn.Module):
             #
 
             future_logits = preds_2D[:, :, :, :, :]
-            future_gt = batch.future_2D[:, 1:, :, :, :]
+            future_gt = batch.future_2D[:, self.n_frames:, :, :, :]
 
             if self.loss2D_version == 0:
 
@@ -1439,7 +1441,7 @@ class KPCollider(nn.Module):
                 else:
                     threshold = 0
                     
-                threshold = min(threshold, 0.98)
+                threshold = min(threshold, 0.99)
                 loss_mask = loss_mask > threshold
                 loss_mask = loss_mask.repeat(1, 1, 1, 1, 3)
 
@@ -1486,7 +1488,7 @@ class KPCollider(nn.Module):
                     threshold = 0
                 
                 # Have a least some locations for the loss
-                threshold = min(threshold, 0.98)
+                threshold = min(threshold, 0.99)
                 loss_mask = loss_mask > threshold
                     
                 # import matplotlib.pyplot as plt
@@ -1600,7 +1602,7 @@ class FakeColliderLoss(nn.Module):
     def __init__(self, config):
         super(FakeColliderLoss, self).__init__()
         
-        self.neg_pos_ratio = 0.5
+        self.neg_pos_ratio = 0
         
         self.fixed_conv = torch.nn.Conv2d(config.n_2D_layers, config.n_2D_layers, 3, stride=1, padding=1, bias=False)
         self.fixed_conv.weight.requires_grad = False
@@ -1663,7 +1665,7 @@ class FakeColliderLoss(nn.Module):
                 threshold = 1 - (ratio_pos * self.neg_pos_ratio / (1.0 - ratio_pos))
             else:
                 threshold = 0
-            threshold = min(threshold, 0.98)
+            threshold = min(threshold, 0.99)
             loss_mask = loss_mask > threshold
             loss_mask = loss_mask.repeat(1, 1, 1, 1, 3)
 
@@ -1676,13 +1678,13 @@ class FakeColliderLoss(nn.Module):
             ratio_pos = float(torch.sum(pos_mask.to(torch.float32)) / float(torch.numel(pos_mask)))
 
             loss_mask = torch.rand_like(future_logits[:, :, :, :, :1])
-            loss_mask[pos_mask] = 1.0
+            loss_mask[gt_mask] = 1.0
 
             if ratio_pos < 0.99:
                 threshold = 1 - (ratio_pos * self.neg_pos_ratio / (1.0 - ratio_pos))
             else:
                 threshold = 0
-            threshold = min(threshold, 0.98)
+            threshold = min(threshold, 0.99)
             loss_mask = loss_mask > threshold
 
             # import matplotlib.pyplot as plt
@@ -1694,6 +1696,23 @@ class FakeColliderLoss(nn.Module):
             # b = debug_img[..., 2]
             # g[np.squeeze(gt_mask[0].cpu().detach().numpy())] = 1.0
             # r[np.squeeze(pred_mask[0].cpu().detach().numpy())] = 1.0
+
+            # # Save
+            # import imageio
+            # from utils.mayavi_visu import zoom_collisions
+            # zoomed = zoom_collisions(debug_img, 5)
+            # imageio.mimsave('results/masks_{:05d}_0.gif'.format(700), zoomed, fps=20)
+            # imageio.mimsave('results/masks_{:05d}_1.gif'.format(700), zoomed[..., 1], fps=20)
+            # imageio.mimsave('results/masks_{:05d}_2.gif'.format(700), zoomed[..., 0], fps=20)
+            # imageio.mimsave('results/masks_{:05d}_3.gif'.format(700), np.max(zoomed, axis=-1), fps=20)
+            
+            
+            # debug_img0 = np.zeros_like(future_logits[0, :, :, :, :].cpu().detach().numpy())
+            # r0 = debug_img0[..., 0]
+            # r0[np.squeeze(loss_mask[0].cpu().detach().numpy())] = 1.0
+            # zoomed2 = zoom_collisions(debug_img0, 5)
+            # imageio.mimsave('results/loss_{:05d}_0.gif'.format(700), zoomed2[..., 0], fps=20)
+
             # im = plt.imshow(debug_img[0])
             # def animate(i):
             #     im.set_array(debug_img[i])
@@ -1714,6 +1733,7 @@ class FakeColliderLoss(nn.Module):
             #                       blit=True)
             # fig3, ax = plt.subplots()
             # debug_img3 = loss_mask[0, :, :, :, 0].cpu().detach().numpy()
+
             # im3 = plt.imshow(debug_img3[0])
             # def animate3(i):
             #     im3.set_array(debug_img3[i])

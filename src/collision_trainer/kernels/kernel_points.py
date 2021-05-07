@@ -24,6 +24,7 @@
 
 # Import numpy package and name it "np"
 import time
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm

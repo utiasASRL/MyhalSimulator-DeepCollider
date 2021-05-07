@@ -25,6 +25,7 @@
 # Basic libs
 import torch
 import torch.nn as nn
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import numpy as np
 import pickle
 import os
@@ -1483,17 +1484,19 @@ class ModelTrainer:
                 frame_preds[proj_mask] = preds.astype(np.uint8)
                 #np.save(filepath, frame_preds)
 
+                
+
                 # Get the 2D predictions and gt (init_2D)
                 img0 = stck_init_preds[b_i, 0, :, :, :]
-                gt_im0 = np.copy(stck_future_gts[b_i, 0, :, :, :])
-                gt_im1 = stck_future_gts[b_i, 0, :, :, :]
-                gt_im1[:, :, 2] = np.max(stck_future_gts[b_i, 1:, :, :, 2], axis=0)
+                gt_im0 = np.copy(stck_future_gts[b_i, config.n_frames - 1, :, :, :])
+                gt_im1 = stck_future_gts[b_i, config.n_frames - 1, :, :, :]
+                gt_im1[:, :, 2] = np.max(stck_future_gts[b_i, :, :, :, 2], axis=0)
                 img1 = stck_init_preds[b_i, 1, :, :, :]
 
                 
                 # Get the 2D predictions and gt (prop_2D)
                 img = stck_future_preds[b_i, :, :, :, :]
-                gt_im = stck_future_gts[b_i, 1:, :, :, :]
+                gt_im = stck_future_gts[b_i, config.n_frames:, :, :, :]
 
                 # Add walls and obstacles for visu purposes
                 #img = np.tile(img, (1, 1, 1, 3))

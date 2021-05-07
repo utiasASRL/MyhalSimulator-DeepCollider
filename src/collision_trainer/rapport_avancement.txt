@@ -66,15 +66,69 @@
         TODO:
         > Visualisation comme l'idee 1 mais ou on compare plusieurs logs a la fin de leur convergence
         > Verifier le noveau training avec 5 frames
-        > Comprendre pourquoi l'erreur du v1 est plu basse
+        > Comprendre pourquoi l'erreur du v1 est plus basse
 
     2021-04-26
     **********
         > Premiere chose on a une idee de pourquoi le loss est meilleur pour le loss v1. C'est a cause du 
             neg_pos_ratio qui est plus grand. il n'est pas pris en compte pour le fn fp donc regarder ca.
-            C'est maintenant corrige, on utilise un neg_pos_ratio fixe pour la validation
+            C'est maintenant corrige, on utilise un neg_pos_ratio fixe pour la validation.
 
+        > Training 5 frames semble meilleur. Ajout de la visualization comparatives des logs
 
+        TODO:
+        > Presentation reunion
+        > Probleme 1: le champs de vision, a passer en mask dans le loss
+        > Probleme 2: Les predictions de mur sur le sol qui cassent tout
+
+    2021-05-02
+    **********
+        > On a corrige l'input preparation pour avoir les frames passee et pouvoir les afficher
+        > Correction du ground annotation pour eviter les faux positifs de mur partout
+        > training randbounce avec 5 puis 3 frames exact same parameters
+
+        TODO:
+        > Verifier l'annotation des randWand
+
+    2021-05-03
+    **********
+        > On a verifie l'annot des RandWand, c'est good. Lance deux trainings indep et shared weigths (3frames)
+        > On a implem la visu avec les inputs frames aussi. A verifier il y a un bug au niveau du np stack quand 
+            deux training sont deja lances en parallele 
+
+        TODO:
+        > Verifier le bug de np stack
+        > Verifier la visu avec le ghost des input frames
+        > Attaquer le bug du planneur en direct avec les predictions
+        > Titre abstract et bio pour Vector
+        > Expense report
+
+    2021-05-05
+    **********
+        > Corrected bugs in the planner of the simulator. Still some stuff to tweak (parameters or bugs?)
+        > Tester avec les custom bouncers (bug du fast collider qui qttend un message indefiniment a corriger)
+
+    2021-05-06
+    **********
+        > Travail sur les parametre de TEB, on a un comportement un peu mieux maintenant mais toujours pas 
+            parfait.
+        > Correction du bug de fast_collider.py qui fait qu'il ne se lancait pas, et aussi qui fait qu'il ne 
+            s'arretait pas.
+        > Plusieurs videos faites qui montrent TEB en action
+        > Lancement de la creation du dataset des flowfollowers
+        > Lancement d'un training avec decay plus rapide pour voir (sur les wanderers)
+        > CORRECTION: min_range du laser 
+
+        TODO:
+        > Finir le dataset des flowfollowers, puis annoter, puis train dessus.
+        > Refaire les datasets bouncers et wanderers avec la nouvelle min_range du laser?
+        > Definition de la costmap3D dans le futur. Implementer un algorithme de diffusion. Predire directement 
+            avec le reseau.
+        > Rechercher comment definir des obstacles ponctuels avec les maxima locaux pour les homotopies.
+
+    2021-05-07
+    **********
+        > First conclusion faster convergence has the same results so we are good with that.
 
 
 

@@ -25,6 +25,7 @@
 # Common libs
 import sys
 import time
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import numpy as np
 import pickle
 import yaml
@@ -2226,7 +2227,7 @@ class MyhalCollisionSlam:
 
         return
 
-    def collision_annotation(self, dl_2D=0.03, future_T=5.0, input_frame_n=3):
+    def collision_annotation(self, dl_2D=0.03, start_T=-1.0, future_T=5.0, input_frame_n=3):
 
         # Here we are testing things for now. Annotate future of points in all the scene
         # For the specific collision annotation, define a radius of interference
@@ -2337,6 +2338,9 @@ class MyhalCollisionSlam:
             day_points = np.vstack((data['x'], data['y'], data['z'])).T
             categories = data['classif']
 
+            # Get the ground plane with RANSAC
+            plane_P, plane_N, _ = RANSAC(day_points[categories == 1, :], threshold_in=0.1)
+
             # Load traj
             cpp_traj_name = join(annot_folder,
                                  'correct_traj_{:s}.pkl'.format(day))
@@ -2386,11 +2390,15 @@ class MyhalCollisionSlam:
                 # plt.show()
                 # a = 1/0
 
+                # Mask of the future points
+                not_ground = np.abs(np.dot((world_pts - plane_P), plane_N)) > 0.2
+                f_mask = np.logical_and(not_ground, f_annot > 1.5)
+                
                 # Do not use ground and uncertain points
-                flat_pts = world_pts[f_annot > 1.5, :]
-                flat_annot = f_annot[f_annot > 1.5]
+                flat_pts = world_pts[f_mask, :]
+                flat_annot = f_annot[f_mask]
                 flat_pts[:, 2] *= 0
-
+                
                 # Subsampling to a 2D PointCloud
                 pts_2D, annots_2D = grid_subsampling(flat_pts,
                                                      labels=flat_annot,
@@ -2400,22 +2408,23 @@ class MyhalCollisionSlam:
                 pts_FIFO.append(pts_2D)
                 annot_FIFO.append(annots_2D)
                 name_FIFO.append(f_name[:-4].split('/')[-1])
-                if float(name_FIFO[-1]) - float(name_FIFO[0]) > future_T:
+                if float(name_FIFO[-1]) - float(name_FIFO[0]) > future_T - start_T:
+
+                    # Get origin time
+                    t_orig = float(name_FIFO[0]) - start_T
+                    ind_orig = np.argmin([np.abs(float(future_name) - t_orig) for future_name in name_FIFO])
 
                     # Stack all point with timestamps (only if object is seen in first frame)
-                    stacked_pts = pts_FIFO[0]
-                    stacked_annot = annot_FIFO[0]
-                    for future_pts, future_name, future_annot in zip(pts_FIFO[1:], name_FIFO[1:], annot_FIFO[1:]):
+                    stacked_pts = np.zeros((0, pts_FIFO[0].shape[1]), pts_FIFO[0].dtype)
+                    stacked_annot = np.zeros((0, annot_FIFO[0].shape[1]), annot_FIFO[0].dtype)
+                    for future_pts, future_name, future_annot in zip(pts_FIFO, name_FIFO, annot_FIFO):
                         new_points = np.copy(future_pts)
-                        # TODO: Here get rid of points without seed in the first three frames
-                        new_points[:, 2] = float(future_name) - float(name_FIFO[0])
+                        new_points[:, 2] = float(future_name) - float(name_FIFO[ind_orig])
                         stacked_pts = np.vstack((stacked_pts, new_points))
                         stacked_annot = np.vstack((stacked_annot, future_annot))
 
-                    # TODO: Use map points for long term objects
-
                     # Save as a 2D point cloud
-                    ply_2D_name = join(out_folder, name_FIFO[0] + '_2D.ply')
+                    ply_2D_name = join(out_folder, name_FIFO[ind_orig] + '_2D.ply')
                     write_ply(ply_2D_name,
                               [stacked_pts, stacked_annot],
                               ['x', 'y', 't', 'classif'])
@@ -3082,19 +3091,20 @@ class MyhalCollisionDataset(PointCloudDataset):
             pts_2D = np.sum(np.expand_dims(pts_2D, 2) * R, axis=1) * scale
 
             # For each time get the closest annotation
-            timestamps = np.linspace(0, self.config.T_2D, self.config.n_2D_layers + 1)
+            future_dt = self.config.T_2D / self.config.n_2D_layers
+            timestamps = np.arange(-(self.config.n_frames - 1) * future_dt, self.config.T_2D + 0.5 * future_dt, future_dt)
             future_dt = (timestamps[1] - timestamps[0]) / 2
             future_imgs = []
             try:
                 for future_t in timestamps:
 
-                    # Valid points for this timestamps are in the time range dt
+                    # Valid points for this timestamps are in the time range dt/2
                     # TODO: Here different valid times for different classes
-                    valid_mask = np.abs(times_2D - future_t) < future_dt
+                    valid_mask = np.abs(times_2D - future_t) < future_dt / 2
                     extension = 1
                     while np.sum(valid_mask) < 1 and extension < 5:
                         extension += 1
-                        valid_mask = np.abs(times_2D - future_t) < future_dt * extension
+                        valid_mask = np.abs(times_2D - future_t) < future_dt * extension / 2
 
                     valid_pts = pts_2D[valid_mask, :]
                     valid_labels = labels_2D[valid_mask]
@@ -3128,8 +3138,8 @@ class MyhalCollisionDataset(PointCloudDataset):
             future_imgs = np.stack(future_imgs, 0)
 
             # For permanent and long term objects, merge all futures
-            future_imgs[:, :, :, 0] = np.sum(future_imgs[:, :, :, 0], axis=0, keepdims=True) / (self.config.n_2D_layers + 1)
-            future_imgs[:, :, :, 1] = np.sum(future_imgs[:, :, :, 1], axis=0, keepdims=True) / (self.config.n_2D_layers + 1)
+            future_imgs[:, :, :, 0] = np.sum(future_imgs[:, :, :, 0], axis=0, keepdims=True) / (self.config.n_2D_layers + self.config.n_frames)
+            future_imgs[:, :, :, 1] = np.sum(future_imgs[:, :, :, 1], axis=0, keepdims=True) / (self.config.n_2D_layers + self.config.n_frames)
 
             # Hardcoded value of 10 shortT points
             future_imgs[:, :, :, 2] = np.clip(future_imgs[:, :, :, 2], 0, 10) / 10

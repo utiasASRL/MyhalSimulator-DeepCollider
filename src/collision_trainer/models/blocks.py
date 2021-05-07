@@ -1582,7 +1582,7 @@ class ProjectorBlock(nn.Module):
         #     plt.subplots()
         #     imgplot = plt.imshow(img)
         #     print(batch.future_2D.shape)
-        #     gt_im = batch.future_2D.detach().cpu().numpy()[i, 0, :, :]
+        #     gt_im = batch.future_2D.detach().cpu().numpy()[i, self.n_frames - 1, :, :]
         #     plt.subplots()
         #     imgplot = plt.imshow(gt_im)
         #     plt.show()
