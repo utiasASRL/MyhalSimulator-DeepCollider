@@ -9,7 +9,10 @@ import torch
 import os
 import ros_numpy
 from ros_numpy import point_cloud2 as pc2
-os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ.update(OMP_NUM_THREADS='1',
+                  OPENBLAS_NUM_THREADS='1',
+                  NUMEXPR_NUM_THREADS='1',
+                  MKL_NUM_THREADS='1',)
 import numpy as np
 from sensor_msgs.msg import PointCloud2, PointField
 from std_srvs.srv import Empty
