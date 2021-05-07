@@ -1438,12 +1438,6 @@ if __name__ == '__main__':
     logs, logs_names = collider_tests_Wanderers(old_res_lim)
     #os.environ['QT_DEBUG_PLUGINS'] = '1'
 
-    print('::::::::::::::::::::::::::::::')
-    np.__config__.show()
-    print('::::::::::::::::::::::::::::::')
-
-    #print(np.__config__.show())
-
     ######################################################
     # Choose a list of log to plot together for comparison
     ######################################################
@@ -1467,7 +1461,7 @@ if __name__ == '__main__':
     # Plot functions
     # ##############
 
-    gifs = False
+    gifs = True
 
     if gifs == True:
 
@@ -1475,7 +1469,7 @@ if __name__ == '__main__':
         # evolution_gifs(logs[1])
 
         # Comparison of last checkpoints of each logs
-        comparison_gifs(logs)
+        comparison_gifs(logs[:1])
 
 
     else:

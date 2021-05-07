@@ -16,6 +16,8 @@
 
 from models.blocks import KPConv, UnaryBlock, block_decider, LRFBlock, GlobalAverageBlock, \
     ProjectorBlock, Propagation2DBlock, Initial2DBlock
+    
+import os
 os.environ.update(OMP_NUM_THREADS='1',
                   OPENBLAS_NUM_THREADS='1',
                   NUMEXPR_NUM_THREADS='1',

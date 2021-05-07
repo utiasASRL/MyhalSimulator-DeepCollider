@@ -15,6 +15,7 @@
 #
 
 
+import os
 from os.path import join
 os.environ.update(OMP_NUM_THREADS='1',
                   OPENBLAS_NUM_THREADS='1',
