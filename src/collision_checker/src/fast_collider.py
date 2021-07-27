@@ -46,7 +46,8 @@ os.environ.update(OMP_NUM_THREADS='1',
                   NUMEXPR_NUM_THREADS='1',
                   MKL_NUM_THREADS='1',)
 import numpy as np
-import torch.multiprocessing as mp
+import torch.multiprocessing as max_in_p
+from utils.mayavi_visu import zoom_collisions
 
 # Useful classes
 from utils.config import Config
@@ -56,6 +57,9 @@ from kernels.kernel_points import create_3D_rotations
 from torch.utils.data import DataLoader, Sampler
 from fast_collider_data import MyhalCollisionCollate, OnlineDataset, OnlineSampler
 from scipy import ndimage
+import scipy.ndimage.filters as filters
+import matplotlib.pyplot as plt
+from scipy.spatial.transform import Rotation as scipyR
 
 # ROS
 import rospy
@@ -64,10 +68,12 @@ import rosgraph
 from ros_numpy import point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2, PointField
 from nav_msgs.msg import OccupancyGrid, MapMetaData
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, PolygonStamped, Point32
+from costmap_converter.msg import ObstacleArrayMsg, ObstacleMsg
 from collision_checker.msg import VoxGrid
 import tf2_ros
 from tf2_msgs.msg import TFMessage
+import imageio
 
 # for pausing gazebo during computation:
 from std_srvs.srv import Empty
@@ -84,16 +90,31 @@ class OnlineCollider():
         # Init environment #
         ####################
 
-        # Set which gpu is going to be used
+        # Set which gpu is going to be used (auto for automatic choice)
         on_gpu = True
-        GPU_ID = rospy.get_param('/gpu_id')
+        GPU_ID = 'auto'
 
-        # Set GPU visible device
-        os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
+        # Automatic choice (need pynvml to be installed)
+        if GPU_ID == 'auto':
+            print('\nSearching a free GPU:')
+            for i in range(torch.cuda.device_count()):
+                a = torch.cuda.list_gpu_processes(i)
+                print(torch.cuda.list_gpu_processes(i))
+                a = a.split()
+                if a[1] == 'no':
+                    GPU_ID = a[0][-1:]
+
+        # Safe check no free GPU
+        if GPU_ID == 'auto':
+            print('\nNo free GPU found!\n')
+            a = 1/0
+
+        else:
+            print('\nUsing GPU:', GPU_ID, '\n')
 
         # Get the GPU for PyTorch
         if on_gpu and torch.cuda.is_available():
-            self.device = torch.device("cuda:0")
+            self.device = torch.device("cuda:{:d}".format(int(GPU_ID)))
         else:
             self.device = torch.device("cpu")
             
@@ -101,7 +122,9 @@ class OnlineCollider():
         # Init ROS #
         ############
 
-        self.obstacle_range = 2.0
+        self.obstacle_range = 1.9
+        self.norm_p = 3
+        self.norm_invp = 1 / self.norm_p
 
         rospy.init_node('fast_collider', anonymous=True)
 
@@ -139,6 +162,20 @@ class OnlineCollider():
         self.softmax = torch.nn.Softmax(1)
         self.sigmoid_2D = torch.nn.Sigmoid()
 
+        # Collision risk diffusion
+        k_range = int(np.ceil(self.obstacle_range / self.config.dl_2D))
+        k = 2 * k_range + 1
+        dist_kernel = np.zeros((k, k))
+        for i, vv in enumerate(dist_kernel):
+            for j, v in enumerate(vv):
+                dist_kernel[i, j] = np.sqrt((i - k_range) ** 2 + (j - k_range) ** 2)
+        dist_kernel = np.clip(1.0 - dist_kernel * self.config.dl_2D / self.obstacle_range, 0, 1) ** self.norm_p
+        self.fixed_conv = torch.nn.Conv2d(1, 1, k, stride=1, padding=k_range, bias=False)
+        self.fixed_conv.weight.requires_grad = False
+        self.fixed_conv.weight *= 0
+        self.fixed_conv.weight += torch.from_numpy(dist_kernel)
+        self.fixed_conv.to(self.device)
+
         # Load the pretrained weigths
         if on_gpu and torch.cuda.is_available():
             checkpoint = torch.load(chkp_path, map_location=self.device)
@@ -158,6 +195,7 @@ class OnlineCollider():
 
         # Subscribe to the lidar topic
         print('\nSubscribe to /velodyne_points')
+        self.velo_frame_id = 'velodyne'
         rospy.Subscriber("/velodyne_points", PointCloud2, self.lidar_callback)
         print('OK\n')
 
@@ -172,6 +210,12 @@ class OnlineCollider():
         self.collision_pub = rospy.Publisher('/plan_costmap_3D', VoxGrid, queue_size=10)
         self.visu_pub = rospy.Publisher('/collision_visu', OccupancyGrid, queue_size=10)
         self.time_resolution = self.config.T_2D / self.config.n_2D_layers
+
+        # Init obstacle publisher
+        self.obstacle_pub = rospy.Publisher('/move_base/TebLocalPlannerROS/obstacles', ObstacleArrayMsg, queue_size=10)
+
+        # Init point cloud publisher
+        self.pointcloud_pub = rospy.Publisher('/classified_points', PointCloud2, queue_size=10)
 
         # # obtaining/defining the parameters for the output of the laserscan data
         # try:
@@ -246,6 +290,7 @@ class OnlineCollider():
 
         #t1 = time.time()
         #print('Starting lidar_callback after {:.1f}'.format(1000*(t1 - self.last_t)))
+        self.velo_frame_id = cloud.header.frame_id
 
         # convert PointCloud2 message to structured numpy array
         labeled_points = pc2.pointcloud2_to_array(cloud)
@@ -289,7 +334,7 @@ class OnlineCollider():
         # No gradient computation here
         with torch.no_grad():
 
-            # When starting this for loop, one thread will be spawned and creating network 
+            # When starting this for loop, one thread will be spawned and creating network
             # input while the loop is performing GPU operations.
             for i, batch in enumerate(self.online_loader):
 
@@ -326,7 +371,7 @@ class OnlineCollider():
                 #####################
 
                 # Forward pass
-                outputs, preds_init, preds_future = self.net(batch, self.config)
+                outputs_3D, preds_init, preds_future = self.net(batch, self.config)
                 torch.cuda.synchronize(self.device)
                 
                 t += [time.time()]
@@ -334,117 +379,155 @@ class OnlineCollider():
                 ###########
                 # Outputs #
                 ###########
-                    
-                # Get future collisions [1, T, W, H, 3] (only one element in the batch)
-                stck_future_preds = self.sigmoid_2D(preds_future).cpu().detach().numpy()
-                stck_future_preds = stck_future_preds[0, :, :, :, :]
 
-                # Use walls and obstacles from init preds
-                # stck_init_preds = sigmoid_2D(preds_init).cpu().detach().numpy()
-                # stck_init_preds = stck_init_preds[0, 0, :, :, :]
-                # stck_future_preds[:, :, :, :2] = np.expand_dims(stck_init_preds[:, :, :2], 0)
+                # Get collision predictions [1, T, W, H, 3] -> [T, W, H, 3]
+                collision_preds = self.sigmoid_2D(preds_future)[0]
+
+                # Get the diffused risk
+                diffused_risk, obst_pos = self.get_diffused_risk(collision_preds)
+
+                # Get obstacles in world coordinates
+                origin0 = batch.p0 - self.config.in_radius / np.sqrt(2)
+
+                world_obst = []
+                for obst_i, pos in enumerate(obst_pos):
+                    world_obst.append(origin0[:2] + pos * self.config.dl_2D)
+
+                # Publish collision risk in a custom message
+                self.publish_collisions(diffused_risk, batch.t0, batch.p0, batch.q0)
+                self.publish_collisions_visu(diffused_risk, batch.t0, batch.p0, batch.q0, visu_T=15)
+
+                # Publish obstacles
+                self.publish_obstacles(world_obst, batch.t0, batch.p0, batch.q0)
+
+                ##############
+                # Outputs 3D #
+                ##############
+
+                # Get predictions
+                predicted_probs = self.softmax(outputs_3D).cpu().detach().numpy()
+                for l_ind, label_value in enumerate(self.online_dataset.label_values):
+                    if label_value in self.online_dataset.ignored_labels:
+                        predicted_probs = np.insert(predicted_probs, l_ind, 0, axis=1)
+                predictions = self.online_dataset.label_values[np.argmax(predicted_probs, axis=1)].astype(np.int32)
+
+                # Get frame points re-aligned in the velodyne coordinates
+                pred_points = batch.points[0].cpu().detach().numpy() + batch.p0
+
+                R0 = scipyR.from_quat(batch.q0).as_matrix()
+                pred_points = np.dot(pred_points - batch.p0, R0)
                 
-                # Diffuse the collision risk to create a simili-signed-distance-function
-                fixed_obstacles = np.sum(stck_future_preds[:, :, :, :3], axis=-1) < 0.5
-                fixed_obstacles_dist = []
-                for i in range(fixed_obstacles.shape[0]):
-                    slice_dist = ndimage.distance_transform_edt(fixed_obstacles[i])
-                    fixed_obstacles_dist.append(slice_dist)
-                fixed_obstacles_dist = np.stack(fixed_obstacles_dist, 0)
-
-                fixed_obstacles_func = np.clip(1.0 - fixed_obstacles_dist * self.config.dl_2D / self.obstacle_range, 0, 1)
-
-                # Convert to uint8 for message 0-254 = prob, 255 = fixed obstacle
-                fixed_preds = (fixed_obstacles_func * 255).astype(np.uint8)
-                moving_preds = (stck_future_preds[:, :, :, 2] * 255).astype(np.uint8)
-                collision_preds = np.maximum(fixed_preds, moving_preds)
-
-
-                # Publish collision in a custom message
-                self.publish_collisions(collision_preds, batch.t0, batch.p0, batch.q0)
-                self.publish_collisions_visu(collision_preds, batch.t0, batch.p0, batch.q0)
+                # Publish pointcloud
+                self.publish_pointcloud(pred_points, predictions, batch.t0)
 
                 t += [time.time()]
 
-
                 # Fake slowing pause
                 time.sleep(2.5)
-                print(35*' ', 35*' ', '{:^35s}'.format('GPU : Inference Done'))
+                
+                t += [time.time()]
+
+                print(35*' ', 35*' ', '{:^35s}'.format('GPU : Inference Done in {:.3f}s (+ {:.3f}s fake)'.format(t[-2] - t[0], t[-1] - t[-2])))
 
 
         return
 
-    def publish_as_laserscan(self, cloud_arr, predictions, original_msg):
-        t1 = time.time()
+    def get_diffused_risk(self, collision_preds):
+                                    
+        # # Remove residual preds (hard hysteresis)
+        # collision_risk *= (collision_risk > 0.06).type(collision_risk.dtype)
+                    
+        # Remove residual preds (soft hysteresis)
+        lim1 = 0.06
+        lim2 = 0.09
+        dlim = lim2 - lim1
+        mask0 = collision_preds <= lim1
+        mask1 = torch.logical_and(collision_preds < lim2, collision_preds > lim1)
+        collision_preds[mask0] *= 0
+        collision_preds[mask1] *= (1 - ((collision_preds[mask1] - lim2) / dlim) ** 2) ** 2
 
-        # stores the laser scan output messages (depending on the filtering we are using), where the index in outputs
-        # corresponds to the publisher at self.pub_list[i][1]
-        outputs = []
-        for k in self.pub_list:
-            scan = self.template_scan
-            scan.ranges = self.ranges_size * [np.inf]
-            scan.header = original_msg.header
-            scan.header.frame_id = "base_link"
-            outputs.append(scan)
+        # Get risk from static objects, [1, 1, W, H]
+        static_preds = torch.unsqueeze(torch.max(collision_preds[:1, :, :, :2], dim=-1)[0], 1)
+        #static_preds = (static_risk > 0.3).type(collision_preds.dtype)
 
-        # Here we assume cloud_arr is a numpy array of shape (N, 3)
+        # Normalize risk values between 0 and 1 depending on density
+        static_risk = static_preds / (self.fixed_conv(static_preds) + 1e-6)
 
-        # First remove any NaN value form the array
-        valid_mask = np.logical_not(np.any(np.isnan(cloud_arr), axis=1))
-        cloud_arr = cloud_arr[valid_mask, :]
-        predictions = predictions[valid_mask]
+        # Diffuse the risk from normalized static objects
+        diffused_0 = self.fixed_conv(static_risk).cpu().detach().numpy()
 
-        # Compute 2d polar coordinate
-        r_arr = np.sqrt(np.sum(cloud_arr[:, :2] ** 2, axis=1))
-        angle_arr = np.arctan2(cloud_arr[:, 1], cloud_arr[:, 0])
+        # Repeat for all the future steps [1, 1, W, H] -> [T, W, H]
+        diffused_0 = np.squeeze(np.tile(diffused_0, (collision_preds.shape[0], 1, 1, 1)))
 
-        # Then remove points according to height/range/angle limits
-        valid_mask = cloud_arr[:, 2] > self.min_height
-        valid_mask = np.logical_and(valid_mask, cloud_arr[:, 2] < self.max_height)
-        valid_mask = np.logical_and(valid_mask, r_arr > self.template_scan.range_min ** 2)
-        valid_mask = np.logical_and(valid_mask, r_arr < self.template_scan.range_max ** 2)
-        valid_mask = np.logical_and(valid_mask, angle_arr > self.template_scan.angle_min)
-        valid_mask = np.logical_and(valid_mask, angle_arr <= self.template_scan.angle_max)
-        angle_arr = angle_arr[valid_mask]
-        r_arr = r_arr[valid_mask]
-        predictions = predictions[valid_mask]
-
-        # Compute angle index for all remaining points
-        indexes = np.floor(((angle_arr - self.template_scan.angle_min) / self.template_scan.angle_increment))
-        indexes = indexes.astype(np.int32)
-
-        # Loop over outputs
-        for j in range(len(outputs)):
-
-            # Mask of the points of the category we need
-            prediction_mask = np.isin(predictions, self.pub_list[j][0])
-
-            # Update ranges only with points of the right category
-            np_ranges = np.array(outputs[j].ranges)
-            np_ranges[indexes[prediction_mask]] = r_arr[prediction_mask]
-            outputs[j].ranges = list(np_ranges)
-
-            # Publish output
-            self.pub_list[j][1].publish(outputs[j])
-
-        print("publish as laserscan time: {:.7f}s".format(time.time() - t1))
-
-    def publish_as_pointcloud(self, new_points, predictions, cloud):
-        # data structure of binary blob output for PointCloud2 data type
-
-        output_dtype = np.dtype({'names': ['x', 'y', 'z', 'intensity', 'ring'], 'formats': ['<f4', '<f4', '<f4', '<f4', '<u2'], 'offsets': [0, 4, 8, 16, 20], 'itemsize': 32})
-
-        # fill structured numpy array with points and classes (in the intensity field). Fill ring with zeros to maintain Pointcloud2 structure
-        new_points = np.c_[new_points, predictions, np.zeros(len(predictions))]
-
-        new_points = np.core.records.fromarrays(new_points.transpose(), output_dtype)
-
-         
-        # convert to Pointcloud2 message and publish
-        msg = pc2.array_to_pointcloud2(new_points, cloud.header.stamp, cloud.header.frame_id)
+        # Diffuse the risk from moving obstacles , [T, 1, W, H] -> [T, W, H]
+        moving_risk = torch.unsqueeze(collision_preds[..., 2], 1)
+        diffused_1 = np.squeeze(self.fixed_conv(moving_risk).cpu().detach().numpy())
         
-        self.pub.publish(msg)
- 
+        # Inverse power for p-norm
+        diffused_0 = np.power(np.maximum(0, diffused_0), self.norm_invp)
+        diffused_1 = np.power(np.maximum(0, diffused_1), self.norm_invp)
+
+        # Merge the two risk after rescaling
+        diffused_0 *= 1.0 / (np.max(diffused_0) + 1e-6)
+        diffused_1 *= 1.0 / (np.max(diffused_1) + 1e-6)
+        diffused_risk = np.maximum(diffused_0, diffused_1)
+
+        # Convert to uint8 for message 0-254 = prob, 255 = fixed obstacle
+        diffused_risk = np.minimum(diffused_risk * 255, 255).astype(np.uint8)
+        
+        # # Save walls for debug
+        # debug_walls = np.minimum(diffused_risk[10] * 255, 255).astype(np.uint8)
+        # cm = plt.get_cmap('viridis')
+        # print(batch.t0)
+        # print(type(batch.t0))
+        # im_name = join(ENV_HOME, 'catkin_ws/src/collision_trainer/results/debug_walls_{:.3f}.png'.format(batch.t0))
+        # imageio.imwrite(im_name, zoom_collisions(cm(debug_walls), 5))
+
+        # Get local maxima in moving obstacles
+        obst_mask = self.get_local_maxima(diffused_1[15])
+
+        # Create obstacles in walls (one cell over 2 to have arround 1 obstacle every 25 cm)
+        static_mask = np.squeeze(static_preds.cpu().detach().numpy() > 0.3)
+        static_mask[::2, :] = 0
+        static_mask[:, ::2] = 0
+
+        # Merge obstacles
+        obst_mask[static_mask] = 1
+
+        # Convert to pixel positions
+        obst_pos = self.mask_to_pix(obst_mask)
+
+        return diffused_risk, obst_pos
+
+    def get_local_maxima(self, data, neighborhood_size=5, threshold=0.1):
+        
+        # Get maxima positions as a mask
+        data_max = filters.maximum_filter(data, neighborhood_size)
+        max_mask = (data == data_max)
+
+        # Remove maxima if their peak is not higher than threshold in the neighborhood
+        data_min = filters.minimum_filter(data, neighborhood_size)
+        diff = ((data_max - data_min) > threshold)
+        max_mask[diff == 0] = 0
+
+        return max_mask
+
+    def mask_to_pix(self, mask):
+        
+        # Get positions in world coordinates
+        labeled, num_objects = ndimage.label(mask)
+        slices = ndimage.find_objects(labeled)
+        x, y = [], []
+
+        mask_pos = []
+        for dy, dx in slices:
+
+            x_center = (dx.start + dx.stop - 1) / 2
+            y_center = (dy.start + dy.stop - 1) / 2
+            mask_pos.append(np.array([x_center, y_center], dtype=np.float32))
+
+        return mask_pos
+
     def publish_collisions(self, collision_preds, t0, p0, q0):
 
         # Get origin and orientation
@@ -476,7 +559,7 @@ class OnlineCollider():
 
         return
 
-    def publish_collisions_visu(self, collision_preds, t0, p0, q0):
+    def publish_collisions_visu(self, collision_preds, t0, p0, q0, visu_T=15):
         '''
         0 = invisible
         1 -> 98 = blue to red
@@ -503,7 +586,7 @@ class OnlineCollider():
         msg.info.height = collision_preds.shape[2]
         msg.info.origin.position.x = origin0[0]
         msg.info.origin.position.y = origin0[1]
-        msg.info.origin.position.z = 0.1
+        msg.info.origin.position.z = -0.01
         #msg.info.origin.orientation.x = q0[0]
         #msg.info.origin.orientation.y = q0[1]
         #msg.info.origin.orientation.z = q0[2]
@@ -511,13 +594,12 @@ class OnlineCollider():
 
 
         # Define message data
-        T = 15
-        data_array = collision_preds[T, :, :].astype(np.float32)
-        mask = collision_preds[T, :, :] > 254
+        data_array = collision_preds[visu_T, :, :].astype(np.float32)
+        mask = collision_preds[visu_T, :, :] > 253
         mask2 = np.logical_not(mask)
-        data_array[mask2] = data_array[mask2] * 98 / 254
-        data_array[mask2] = np.maximum(1, np.minimum(98, data_array[mask2] * 2.0))
-        data_array[mask] = 101
+        data_array[mask2] = data_array[mask2] * 98 / 253
+        data_array[mask2] = np.maximum(1, np.minimum(98, data_array[mask2] * 1.0))
+        data_array[mask] = 98  # 101
         data_array = data_array.astype(np.int8)
         msg.data = data_array.ravel()
 
@@ -526,6 +608,46 @@ class OnlineCollider():
 
         return
 
+    def publish_obstacles(self, obstacle_list, t0, p0, q0):
+
+
+        msg = ObstacleArrayMsg()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = 'map'
+        
+        # Add point obstacles
+        for obst_i, pos in enumerate(obstacle_list):
+
+            obstacle_msg = ObstacleMsg()
+            obstacle_msg.id = obst_i
+            obstacle_msg.polygon.points = [Point32(x=pos[0], y=pos[1], z=0)]
+
+            # obstacle_msg.polygon.points[0].x = 1.5
+            # obstacle_msg.polygon.points[0].y = 0
+            # obstacle_msg.polygon.points[0].z = 0
+
+            msg.obstacles.append(obstacle_msg)
+
+        self.obstacle_pub.publish(msg)
+
+        return
+
+    def publish_pointcloud(self, new_points, predictions, t0):
+
+        # data structure of binary blob output for PointCloud2 data type
+        output_dtype = np.dtype({'names': ['x', 'y', 'z', 'intensity', 'ring'],
+                                 'formats': ['<f4', '<f4', '<f4', '<f4', '<u2'],
+                                 'offsets': [0, 4, 8, 16, 20],
+                                 'itemsize': 32})
+
+        # fill structured numpy array with points and classes (in the intensity field). Fill ring with zeros to maintain Pointcloud2 structure
+        c_points = np.c_[new_points, predictions, np.zeros(len(predictions))]
+        c_points = np.core.records.fromarrays(c_points.transpose(), output_dtype)
+
+        # convert to Pointcloud2 message and publish
+        msg = pc2.array_to_pointcloud2(c_points, rospy.Time.from_sec(t0), self.velo_frame_id)
+        
+        self.pointcloud_pub.publish(msg)
 
 # ----------------------------------------------------------------------------------------------------------------------
 #
@@ -535,6 +657,7 @@ class OnlineCollider():
 
 
 if __name__ == '__main__':
+
     #mp.set_start_method('spawn')
 
     # q = mp.Queue()
@@ -577,4 +700,6 @@ if __name__ == '__main__':
     print('Start inference loop')
     tester.inference_loop()
     print('OK')
+
+
 

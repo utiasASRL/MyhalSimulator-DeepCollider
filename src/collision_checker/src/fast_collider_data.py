@@ -392,7 +392,7 @@ class OnlineDataset:
         # Loop in inverse order to start with most recent frame
         for f_i, (pose, (stamp, frame_pts)) in enumerate(zip(current_poses[::-1], current_frames[::-1])):
 
-            # Get translatio nand rotation matrices
+            # Get translation and rotation matrices
             T = np.array([pose.transform.translation.x,
                           pose.transform.translation.y,
                           pose.transform.translation.z])

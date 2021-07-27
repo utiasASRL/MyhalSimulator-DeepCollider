@@ -3153,6 +3153,10 @@ class MyhalCollisionDataset(PointCloudDataset):
                 if np.max(future_imgs[:, :, :, i]) > 1.0:
                     future_imgs[:, :, :, i] = future_imgs[:, :, :, i] / (np.max(future_imgs[:, :, :, i]) + 1e-9)
 
+            # Get in range [0.5, 1] instead of [0, 1]
+            f_mask = future_imgs > 0.01
+            future_imgs[f_mask] = 0.5 * (future_imgs[f_mask] + 1.0)
+
             input_classes = np.sum(future_imgs[0, :, :, :], axis=(0, 1)) > 0
 
             ###########################################################################################
@@ -3497,10 +3501,8 @@ class MyhalCollisionSampler(Sampler):
                 gen_indices = torch.randperm(self.dataset.potentials.shape[0])
 
             # Update potentials (Change the order for the next epoch)
-            self.dataset.potentials[gen_indices] = torch.ceil(
-                self.dataset.potentials[gen_indices])
-            self.dataset.potentials[gen_indices] += torch.from_numpy(
-                np.random.rand(gen_indices.shape[0]) * 0.1 + 0.1)
+            self.dataset.potentials[gen_indices] = torch.ceil(self.dataset.potentials[gen_indices])
+            self.dataset.potentials[gen_indices] += torch.from_numpy(np.random.rand(gen_indices.shape[0]) * 0.1 + 0.1)
 
             # Update epoch inds
             self.dataset.epoch_inds += gen_indices

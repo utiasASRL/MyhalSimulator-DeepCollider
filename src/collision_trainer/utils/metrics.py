@@ -160,6 +160,29 @@ def metrics(confusions, ignore_unclassified=False):
     return PRE, REC, F1, IoU, ACC
 
 
+def fast_threshold_stats(bool_true, float_pred, n_thresh=50):
+
+    # Get thresholds
+    thresholds = np.linspace(0.0, 1.0, n_thresh, endpoint=False)
+    thresholds = 1 - thresholds ** 1
+
+    # Get predictions for each threshold  [..., N] => [..., N, n_thresh]
+    inserted_dims = tuple(np.arange(float_pred.ndim, dtype=np.int32))
+    thresholds = np.expand_dims(thresholds, inserted_dims)
+    float_pred = np.expand_dims(float_pred, -1)
+    bool_pred = float_pred > thresholds
+
+    # Get the boolean result mask
+    bool_true = np.expand_dims(bool_true, -1)
+    not_true = np.logical_not(bool_true)
+    not_pred = np.logical_not(bool_pred)
+    tps = np.sum(np.logical_and(bool_pred, bool_true).astype(np.int32), axis=-2)
+    fps = np.sum(np.logical_and(bool_pred, not_true).astype(np.int32), axis=-2)
+    fns = np.sum(np.logical_and(not_pred, bool_true).astype(np.int32), axis=-2)
+
+    return np.stack((tps, fps, fns), axis=-1)
+
+
 def smooth_metrics(confusions, smooth_n=0, ignore_unclassified=False):
     """
     Computes different metrics from confusion matrices. Smoothed over a number of epochs.

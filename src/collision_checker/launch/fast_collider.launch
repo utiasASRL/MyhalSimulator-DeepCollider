@@ -1,6 +1,8 @@
 <launch>
     <param name="gpu_id" type="str" value="0" />
-	<param name="log_name" type="str" value="Log_2021-05-02_10-19-22"/>  <!-- First network (for Round2) -->
-	<param name="chkp_name" type="str" value="chkp_0720.tar"/>
+	<param name="log_name" type="str" value="Log_2021-05-24_13-59-19"/>  <!-- Bouncers, use 0300 -->
+	<!-- <param name="log_name" type="str" value="Log_2021-05-24_15-46-47"/>  Wanderers, use 0300 -->
+	<!-- <param name="log_name" type="str" value="Log_2021-06-04_11-13-12"/>  FlowFollowers, use 0300 -->
+	<param name="chkp_name" type="str" value="chkp_0300.tar"/>
 	<node name="fast_collider" pkg="collision_checker" type="fast_collider.py" output="screen"/>
 </launch>

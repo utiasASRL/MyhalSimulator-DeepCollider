@@ -1477,8 +1477,8 @@ class KPCollider(nn.Module):
             else:
 
                 # Masks for FP and FN
-                gt_mask = torch.sum(future_gt, dim=-1, keepdim=True) > 0.05
-                pred_mask = torch.sum(self.sigmoid(future_logits), dim=-1, keepdim=True) > 0.05
+                gt_mask = torch.sum(future_gt, dim=-1, keepdim=True) > 0.01
+                pred_mask = torch.sum(self.sigmoid(future_logits), dim=-1, keepdim=True) > 0.03
                 pos_mask = torch.logical_or(gt_mask, pred_mask)
                 ratio_pos = float(torch.sum(pos_mask.to(torch.float32)) / float(torch.numel(pos_mask)))
 
@@ -1789,8 +1789,8 @@ class FakeColliderLoss(nn.Module):
         future_p = self.sigmoid(future_logits)
 
         # Masks for FP and FN
-        gt_mask = torch.sum(future_gt, dim=-1, keepdim=True) > 0.05
-        pred_mask = torch.sum(future_p, dim=-1, keepdim=True) > 0.05
+        gt_mask = torch.sum(future_gt, dim=-1, keepdim=True) > 0.01
+        pred_mask = torch.sum(future_p, dim=-1, keepdim=True) > 0.1
         
         # Specific loss function for validation (no reduction)
         if error == 'bce':

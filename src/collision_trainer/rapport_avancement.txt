@@ -130,6 +130,11 @@
     **********
         > First conclusion faster convergence has the same results so we are good with that.
 
+    2021-05-12
+    **********
+        > Training sur les flow followers a plutot bien fonctionne. 
+        > bouncers et wanderers a refaire
+        > Idee, quand on utilise le planner en direct, utiliser la world map pour la diffusion des permanent pixels
 
 
 

@@ -2215,10 +2215,6 @@ class MyhalSimSlam:
                        3: 'longT',
                        4: 'shortT'}
 
-
-
-
-
         ##############
         # LOOP ON DAYS
         ##############
@@ -2342,15 +2338,14 @@ class MyhalSimSlam:
                     pts_FIFO.pop(0)
                     annot_FIFO.pop(0)
                     name_FIFO.pop(0)
-                
+
                 debug_n = 50
                 if i % debug_n == debug_n - 1:
-                    
+
                     ply_name = join(out_folder, f_name.split('/')[-1])
                     write_ply(ply_name,
-                            [world_pts, f_annot],
-                            ['x', 'y', 'z', 'classif'])
-
+                              [world_pts, f_annot],
+                              ['x', 'y', 'z', 'classif'])
 
                 # Timing
                 t += [time.time()]
@@ -2604,22 +2599,17 @@ class MyhalSimDataset(PointCloudDataset):
                 # Select frame only if center has moved far away (more than X meter). Negative value to ignore
                 X = -1.0
                 if X > 0:
-                    diff = p_origin.dot(pose.T)[:, :3] - p_origin.dot(
-                        pose0.T)[:, :3]
-                    if num_merged > 0 and np.linalg.norm(
-                            diff) < num_merged * X:
+                    diff = p_origin.dot(pose.T)[:, :3] - p_origin.dot(pose0.T)[:, :3]
+                    if num_merged > 0 and np.linalg.norm(diff) < num_merged * X:
                         f_inc += 1
                         continue
 
                 # Path of points and labels
                 if self.set == 'test':
-                    seq_path = join(self.original_path, 'simulated_runs',
-                                    self.sequences[s_ind], 'sim_frames')
+                    seq_path = join(self.original_path, 'simulated_runs', self.sequences[s_ind], 'sim_frames')
                 else:
-                    seq_path = join(self.original_path, 'annotated_frames',
-                                    self.sequences[s_ind])
-                velo_file = join(seq_path,
-                                 self.frames[s_ind][f_ind - f_inc] + '.ply')
+                    seq_path = join(self.original_path, 'annotated_frames', self.sequences[s_ind])
+                velo_file = join(seq_path, self.frames[s_ind][f_ind - f_inc] + '.ply')
 
                 # Read points
                 data = read_ply(velo_file)
@@ -2635,8 +2625,7 @@ class MyhalSimDataset(PointCloudDataset):
 
                 # Apply inverse of pose to get original lidar measurements (without np.dot to avoid multi-threading)
                 hpoints = np.hstack((points, np.ones_like(points[:, :1])))
-                lidar_points = np.sum(np.expand_dims(hpoints, 2) * pose,
-                                      axis=1).astype(np.float32)
+                lidar_points = np.sum(np.expand_dims(hpoints, 2) * pose, axis=1).astype(np.float32)
 
                 # In case of validation, keep the points in memory
                 if self.set in ['validation', 'test'] and f_inc == 0:
@@ -2646,15 +2635,13 @@ class MyhalSimDataset(PointCloudDataset):
                 # In case radius smaller than 50m, chose new center on a point of the wanted class or not
                 if self.in_R < 50.0 and f_inc == 0:
                     if self.balance_classes:
-                        wanted_ind = np.random.choice(
-                            np.where(sem_labels == wanted_label)[0])
+                        wanted_ind = np.random.choice(np.where(sem_labels == wanted_label)[0])
                     else:
                         wanted_ind = np.random.choice(points.shape[0])
                     p0 = points[wanted_ind, :3]
 
                 # Eliminate points further than config.in_radius
-                mask = np.sum(np.square(points[:, :3] - p0),
-                              axis=1) < self.in_R**2
+                mask = np.sum(np.square(points[:, :3] - p0), axis=1) < self.in_R ** 2
                 mask_inds = np.where(mask)[0].astype(np.int32)
 
                 # Shuffle points
@@ -2669,11 +2656,8 @@ class MyhalSimDataset(PointCloudDataset):
                     # We have to project in the first frame coordinates
                     new_coords = points - pose0[:3, 3]
                     # new_coords = new_coords.dot(pose0[:3, :3])
-                    new_coords = np.sum(np.expand_dims(new_coords, 2) *
-                                        pose0[:3, :3],
-                                        axis=1)
-                    new_coords = np.hstack(
-                        (new_coords, lidar_points[rand_order, 3:]))
+                    new_coords = np.sum(np.expand_dims(new_coords, 2) * pose0[:3, :3], axis=1)
+                    new_coords = np.hstack((new_coords, lidar_points[rand_order, 3:]))
 
                 # Increment merge count
                 merged_points = np.vstack((merged_points, points))
